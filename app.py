@@ -246,7 +246,7 @@ with c5:
 st.divider()
 
 # 指定零件/品牌（可多組）
-st.markdown("### 指定零件 → 指定品牌（可多組）")
+st.markdown("### Specify Components → Specify Brand (Multiple Allowed)")
 
 def add_spec():
     st.session_state.spec_rows.append({"part": "", "brand": ""})
@@ -255,7 +255,7 @@ def remove_spec(idx: int):
     if len(st.session_state.spec_rows) > 1:
         st.session_state.spec_rows.pop(idx)
 
-st.button("➕ 新增一組", on_click=add_spec)
+st.button("➕  add one more", on_click=add_spec)
 
 for i, row in enumerate(st.session_state.spec_rows):
     a, b, c = st.columns([2, 3, 1])
@@ -294,7 +294,7 @@ for i, row in enumerate(st.session_state.spec_rows):
 st.divider()
 
 # 排除零件（可多個）
-st.markdown("### 選擇不需要列入清單裡的零件（可多個）")
+st.markdown("### Exclude Components (Multiple Allowed)")
 
 def add_exclude():
     st.session_state.exclude_rows.append({"part": ""})
@@ -303,9 +303,9 @@ def remove_exclude(idx: int):
     if len(st.session_state.exclude_rows) > 1:
         st.session_state.exclude_rows.pop(idx)
 
-st.button("➕ 新增一個", on_click=add_exclude)
+st.button("➕  add one more", on_click=add_exclude)
 
-for i, row in enumerate(st.session_state.exclude_rows):
+for.button("➕ add one more", on",, on_st.session_state.exclude_
     a, b = st.columns([4, 1])
     with a:
         ex = st.selectbox(
