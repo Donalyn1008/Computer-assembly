@@ -7,9 +7,6 @@ Original file is located at
     https://colab.research.google.com/drive/1nsg70ruN4kfuFaF8GM1Q8nFDvQMClQym
 """
 
-!pip -q install streamlit pandas
-
-!streamlit run app.py --server.port 8501 --server.address 0.0.0.0 --server.headless true &>/content/streamlit.log &
 
 from __future__ import annotations
 import random
