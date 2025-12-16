@@ -1,0 +1,353 @@
+from __future__ import annotations
+import random
+import streamlit as st
+import pandas as pd
+
+# =========================
+# 沒後端先測 UI：True
+# 之後有後端再改 False 並接 API
+# =========================
+MOCK_MODE = True
+
+# 你的零件分類（代碼->中文顯示）
+PARTS = [
+    ("AIO", "水冷"),
+    ("FAN", "風扇"),
+    ("COOLER", "散熱"),
+    ("PSU", "電源"),
+    ("CASE", "機殼"),
+    ("CPU", "CPU"),
+    ("HDD", "HDD"),
+    ("MB", "MB"),
+    ("RAM", "RAM"),
+    ("SSD", "SSD"),
+    ("VGA", "VGA"),
+]
+PART_CODES = [p[0] for p in PARTS]
+PART_LABEL = {p[0]: p[1] for p in PARTS}
+
+PURPOSES = {
+    "programming": "programming",
+    "graph_design": "graph design",
+    "video_editing": "video editing",
+    "word_processing": "word processing",
+}
+RAM_OPTIONS = [8, 16, 32, 48, 64, 96, 128, 192]
+
+# 你希望「整機」預設會輸出哪些零件（可自行調整）
+DEFAULT_BUILD = ["CPU", "MB", "RAM", "SSD", "VGA", "PSU", "CASE", "COOLER"]
+
+# Mock 品牌清單（沒有後端時用）
+MOCK_BRANDS = {
+    "CPU": ["Intel", "AMD"],
+    "MB": ["ASUS", "MSI", "GIGABYTE", "ASRock"],
+    "RAM": ["Kingston", "Corsair", "G.SKILL", "Crucial"],
+    "VGA": ["ASUS", "MSI", "GIGABYTE", "ZOTAC", "SAPPHIRE"],
+    "SSD": ["Samsung", "WD", "Kingston", "Crucial"],
+    "HDD": ["Seagate", "WD", "Toshiba"],
+    "PSU": ["Seasonic", "Corsair", "FSP", "Cooler Master"],
+    "CASE": ["LIAN LI", "NZXT", "Fractal", "Cooler Master"],
+    "COOLER": ["Noctua", "DeepCool", "Thermalright"],
+    "FAN": ["Noctua", "ARCTIC", "LIAN LI"],
+    "AIO": ["Corsair", "NZXT", "ASUS", "LIAN LI"],
+}
+
+# Mock 價格區間（讓結果看起來合理）
+PRICE_RANGE = {
+    "CPU": (4500, 14000),
+    "MB": (2800, 9000),
+    "RAM": (1200, 8000),
+    "SSD": (1200, 6500),
+    "HDD": (1200, 4500),
+    "VGA": (7000, 40000),
+    "PSU": (1800, 6500),
+    "CASE": (1500, 6500),
+    "COOLER": (800, 3500),
+    "FAN": (200, 1500),
+    "AIO": (2000, 7000),
+}
+
+ORDER = ["CPU", "MB", "RAM", "VGA", "SSD", "HDD", "PSU", "CASE", "COOLER", "AIO", "FAN"]
+
+
+def part_fmt(code: str) -> str:
+    return "請選擇" if code == "" else f"{PART_LABEL.get(code, code)} ({code})"
+
+
+def purpose_multiplier(purpose: str | None) -> float:
+    # 只是為了 demo：不同 purpose 讓價格有可見差異
+    if purpose == "video_editing":
+        return 1.15
+    if purpose == "graph_design":
+        return 1.10
+    if purpose == "programming":
+        return 1.05
+    if purpose == "word_processing":
+        return 0.95
+    return 1.00
+
+
+def make_model(part: str, brand: str, ram_gb: int | None) -> str:
+    suffix = random.randint(100, 999)
+    if part == "CPU":
+        return f"{brand} {random.choice(['i5','i7','R5','R7'])}-{suffix}"
+    if part == "MB":
+        return f"{brand} {random.choice(['B760','Z790','B650','X670'])}-{suffix}"
+    if part == "RAM":
+        cap = f"{ram_gb}GB" if ram_gb else random.choice(["16GB", "32GB", "64GB"])
+        return f"{brand} DDR{random.choice([4,5])} {cap}"
+    if part == "VGA":
+        return f"{brand} RTX{random.choice(['4060','4070','4080'])}-{suffix}"
+    if part == "SSD":
+        return f"{brand} {random.choice(['NVMe','PCIe4.0','PCIe5.0'])}-{suffix}"
+    if part == "HDD":
+        return f"{brand} {random.choice(['2TB','4TB','8TB'])}-{suffix}"
+    if part == "PSU":
+        return f"{brand} {random.choice(['650W','750W','850W'])} Gold"
+    if part == "CASE":
+        return f"{brand} {random.choice(['ATX','mATX','Mid Tower'])}-{suffix}"
+    if part == "COOLER":
+        return f"{brand} {random.choice(['Tower','Top-Down'])}-{suffix}"
+    if part == "AIO":
+        return f"{brand} {random.choice(['240mm','280mm','360mm'])} AIO"
+    if part == "FAN":
+        return f"{brand} {random.choice(['120mm','140mm'])} Fan"
+    return f"{brand} {part}-{suffix}"
+
+
+def make_detail(purpose: str | None, color: str | None, rgb: str | None, ram_gb: int | None, part: str) -> str:
+    tags = []
+    if purpose:
+        tags.append(f"purpose={purpose}")
+    if color:
+        tags.append(f"color={color}")
+    if rgb:
+        tags.append(f"rgb={rgb}")
+    if part == "RAM" and ram_gb:
+        tags.append(f"capacity={ram_gb}GB")
+    return " | ".join(tags) if tags else "mock detail"
+
+
+def mock_recommend(payload: dict) -> list[dict]:
+    price_cap: int | None = payload.get("price")
+    purpose: str | None = payload.get("purpose")
+    color: str | None = payload.get("color")
+    rgb: str | None = payload.get("rgb")
+    ram_gb: int | None = payload.get("ram")
+
+    specified: list[dict] = payload.get("specified") or []
+    excludes: set[str] = set(payload.get("excludes") or [])
+
+    # ✅ 重點：永遠先用整機清單，再用指定補進去（不取代）
+    target_parts = list(DEFAULT_BUILD)
+    for s in specified:
+        p = s.get("part")
+        if p and p not in target_parts:
+            target_parts.append(p)
+
+    # 排除
+    target_parts = [p for p in target_parts if p not in excludes]
+
+    # 生成 items
+    items: list[dict] = []
+    mult = purpose_multiplier(purpose)
+
+    for part in target_parts:
+        brands = MOCK_BRANDS.get(part, ["Generic"])
+        specified_brand = ""
+        for s in specified:
+            if s.get("part") == part and s.get("brand"):
+                specified_brand = s["brand"]
+                break
+        brand = specified_brand or random.choice(brands)
+
+        lo, hi = PRICE_RANGE.get(part, (1000, 5000))
+        price = round(random.randint(lo, hi) * mult)
+
+        # demo：rgb/color 讓價格變化看得見
+        if rgb == "yes" and part in {"CASE", "FAN", "AIO", "COOLER", "RAM"}:
+            price += 300
+        if color == "white" and part in {"CASE", "AIO", "COOLER", "FAN"}:
+            price += 200
+
+        items.append({
+            "part": part,
+            "brand": brand,
+            "model": make_model(part, brand, ram_gb),
+            "detail": make_detail(purpose, color, rgb, ram_gb, part),
+            "price": price,
+        })
+
+    # 預算上限（demo：刪掉最貴的直到 <= cap）
+    if price_cap and price_cap > 0:
+        total = sum(x["price"] for x in items)
+        if total > price_cap:
+            items.sort(key=lambda x: x["price"], reverse=True)
+            while items and total > price_cap:
+                removed = items.pop(0)
+                total -= removed["price"]
+
+    # 排序好看
+    items.sort(key=lambda x: ORDER.index(x["part"]) if x["part"] in ORDER else 999)
+    return items
+
+
+# ============ UI ============
+st.set_page_config(page_title="PC Builder", layout="wide")
+st.title("PC Builder（Streamlit / 無後端也能展示）")
+
+with st.sidebar:
+    st.write("目前模式：", "✅ MOCK（無後端）" if MOCK_MODE else "API（有後端）")
+    st.caption("你現在要先看介面與輸出，所以用 MOCK 產生結果。")
+
+
+# state init
+if "spec_rows" not in st.session_state:
+    st.session_state.spec_rows = [{"part": "", "brand": ""}]
+if "exclude_rows" not in st.session_state:
+    st.session_state.exclude_rows = [{"part": ""}]
+
+# Basic
+st.subheader("Basic option")
+c1, c2 = st.columns(2)
+with c1:
+    price = st.number_input("price（預算上限）", min_value=0, value=0, step=1000)
+    price_val = None if price == 0 else int(price)
+with c2:
+    purpose_key = st.selectbox("purpose", [""] + list(PURPOSES.keys()),
+                              format_func=lambda k: "請選擇" if k == "" else PURPOSES[k])
+    purpose_val = None if purpose_key == "" else purpose_key
+
+# Advance
+st.subheader("Advance option")
+c3, c4, c5 = st.columns(3)
+with c3:
+    color = st.selectbox("Color", ["", "black", "white"],
+                         format_func=lambda x: {"": "不指定", "black": "黑", "white": "白"}[x])
+    color_val = None if color == "" else color
+with c4:
+    rgb = st.selectbox("RGB light", ["", "yes", "no"],
+                       format_func=lambda x: {"": "不指定", "yes": "是", "no": "否"}[x])
+    rgb_val = None if rgb == "" else rgb
+with c5:
+    ram = st.selectbox("RAM", [""] + RAM_OPTIONS, format_func=lambda x: "不指定" if x == "" else str(x))
+    ram_val = None if ram == "" else int(ram)
+
+st.divider()
+
+# 指定零件/品牌（可多組）
+st.markdown("### 指定零件 → 指定品牌（可多組）")
+
+def add_spec():
+    st.session_state.spec_rows.append({"part": "", "brand": ""})
+
+def remove_spec(idx: int):
+    if len(st.session_state.spec_rows) > 1:
+        st.session_state.spec_rows.pop(idx)
+
+st.button("➕ 新增一組", on_click=add_spec)
+
+for i, row in enumerate(st.session_state.spec_rows):
+    a, b, c = st.columns([2, 3, 1])
+
+    with a:
+        part = st.selectbox(
+            f"指定零件 #{i+1}",
+            [""] + PART_CODES,
+            key=f"spec_part_{i}",
+            index=([""] + PART_CODES).index(row["part"]) if row["part"] in ([""] + PART_CODES) else 0,
+            format_func=part_fmt,
+        )
+        st.session_state.spec_rows[i]["part"] = part
+
+    with b:
+        if part:
+            brands = MOCK_BRANDS.get(part, ["Generic"])  # 無後端先用 mock
+            brand = st.selectbox(
+                f"指定品牌 #{i+1}（選填）",
+                [""] + brands,
+                key=f"spec_brand_{i}",
+                format_func=lambda x: "不指定品牌" if x == "" else x,
+            )
+        else:
+            brand = st.selectbox(
+                f"指定品牌 #{i+1}",
+                [""],
+                key=f"spec_brand_{i}",
+                format_func=lambda _: "先選零件",
+            )
+        st.session_state.spec_rows[i]["brand"] = brand
+
+    with c:
+        st.button("移除", key=f"rm_spec_{i}", on_click=remove_spec, args=(i,))
+
+st.divider()
+
+# 排除零件（可多個）
+st.markdown("### 選擇不需要列入清單裡的零件（可多個）")
+
+def add_exclude():
+    st.session_state.exclude_rows.append({"part": ""})
+
+def remove_exclude(idx: int):
+    if len(st.session_state.exclude_rows) > 1:
+        st.session_state.exclude_rows.pop(idx)
+
+st.button("➕ 新增一個", on_click=add_exclude)
+
+for i, row in enumerate(st.session_state.exclude_rows):
+    a, b = st.columns([4, 1])
+    with a:
+        ex = st.selectbox(
+            f"排除零件 #{i+1}",
+            [""] + PART_CODES,
+            key=f"ex_part_{i}",
+            index=([""] + PART_CODES).index(row["part"]) if row["part"] in ([""] + PART_CODES) else 0,
+            format_func=part_fmt,
+        )
+        st.session_state.exclude_rows[i]["part"] = ex
+    with b:
+        st.button("移除", key=f"rm_ex_{i}", on_click=remove_exclude, args=(i,))
+
+# payload
+specified = [{"part": r["part"], "brand": r["brand"]} for r in st.session_state.spec_rows if r["part"]]
+excludes = [r["part"] for r in st.session_state.exclude_rows if r["part"]]
+
+payload = {
+    "price": price_val,
+    "purpose": purpose_val,
+    "color": color_val,
+    "rgb": rgb_val,
+    "ram": ram_val,
+    "specified": specified,
+    "excludes": excludes,
+}
+
+with st.expander("payload（debug）"):
+    st.json(payload)
+
+# Generate
+if st.button("✅ 產生結果（Mock）", type="primary"):
+    items = mock_recommend(payload)
+
+    if not items:
+        st.warning("沒有結果（可能全部被排除或預算太低被裁切）。")
+    else:
+        df = pd.DataFrame(items)
+        df["part"] = df["part"].map(lambda x: PART_LABEL.get(x, x))
+        df = df[["part", "brand", "model", "detail", "price"]]
+
+        total_price = int(df["price"].fillna(0).sum())
+
+        st.subheader("Output")
+        st.dataframe(df, use_container_width=True)
+
+        st.markdown(f"### Total price：**{total_price:,} NTD**")
+
+        # 可選：下載
+        st.download_button(
+            "下載結果 CSV",
+            data=df.to_csv(index=False).encode("utf-8-sig"),
+            file_name="pc_recommendation_mock.csv",
+            mime="text/csv",
+        )
