@@ -1,20 +1,18 @@
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 import streamlit as st
 
 # =========================
-# 1) Import your optimizer
+# Import optimizer
 # =========================
-# optimization.py must be in the SAME repo root as app.py
 from optimization import PCBuilderAI  # type: ignore
 
 
 # =========================
-# 2) Data files in GitHub repo
-#    (repo root) /data/*.csv
+# Data files in repo: /data/*.csv
 # =========================
 FILES = {
     "CPU": "data/CPU_labeled.csv_ranking_result.csv",
@@ -31,7 +29,7 @@ FILES = {
 }
 
 # =========================
-# 3) UI constants
+# UI constants
 # =========================
 PARTS = [
     ("AIO", "AIO Liquid Cooler"),
@@ -58,13 +56,17 @@ PURPOSES = {
 RAM_OPTIONS = [8, 16, 32, 48, 64, 96, 128, 192]
 
 ORDER = ["CPU", "MB", "RAM", "VGA", "SSD", "HDD", "PSU", "CASE", "COOLER", "AIO", "FAN"]
+CORE_PARTS = {"CPU", "VGA"}  # prevent "empty output" when user excludes too much
 
 
+# =========================
+# Helpers
+# =========================
 def part_fmt(code: str) -> str:
     return "Select..." if code == "" else f"{PART_LABEL.get(code, code)} ({code})"
 
 
-def map_optimizer_part_to_ui(part_key: str, cooling: str) -> str:
+def map_optimizer_part_to_ui(part_key: str) -> str:
     """
     Optimizer uses: CHASSIS / HEAT / WATER
     UI wants: CASE / COOLER / AIO
@@ -85,70 +87,126 @@ def safe_float(x: Any, default: float = 0.0) -> float:
         return default
 
 
+def normalize_colname(s: Any) -> str:
+    """Normalize a column name to compare: strip spaces + lowercase + collapse full-width spaces."""
+    txt = str(s)
+    txt = txt.replace("\u3000", " ")
+    txt = txt.strip().lower()
+    return txt
+
+
+def pick_detail_from_row(row: Any) -> str:
+    """
+    Robust detail extraction:
+    - Works even if actual column name has trailing spaces / different case
+    - Accepts common synonyms (detail/description/spec and Chinese variants)
+    """
+    if not hasattr(row, "to_dict"):
+        return ""
+
+    d = row.to_dict()
+    # map normalized name -> original key
+    norm_map = {normalize_colname(k): k for k in d.keys()}
+
+    candidates = [
+        "detail",
+        "description",
+        "desc",
+        "spec",
+        "specification",
+        "規格",
+        "描述",
+        "細節",
+        "詳細",
+        "說明",
+        "商品描述",
+        "商品規格",
+        "產品描述",
+        "產品規格",
+    ]
+
+    for want in candidates:
+        k = norm_map.get(normalize_colname(want))
+        if k is None:
+            continue
+        v = d.get(k, "")
+        if v is None:
+            continue
+        v = str(v).strip()
+        if v != "" and v.lower() != "nan":
+            return v
+
+    return ""
+
+
 @st.cache_resource
 def get_ai() -> PCBuilderAI:
-    # cache the optimizer instance so it doesn't reload CSV every rerun
     return PCBuilderAI(FILES)
 
 
 def build_items_from_optimizer(
     build: Dict[str, Any],
-    cooling: str,
     excludes: List[str],
-) -> List[Dict[str, Any]]:
+    debug: bool = False,
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     """
     build: dict returned by ai.optimize_build -> {part_key: pd.Series}
+    returns: (items, debug_info)
     """
     ex = set(excludes or [])
     items: List[Dict[str, Any]] = []
 
-    for part_key, row in build.items():
-        ui_part = map_optimizer_part_to_ui(part_key, cooling)
+    debug_info: Dict[str, Any] = {
+        "optimizer_keys": [],
+        "excluded_ui_parts": [],
+        "kept_ui_parts": [],
+    }
 
-        if ui_part in ex:
+    for part_key, row in build.items():
+        debug_info["optimizer_keys"].append(part_key)
+
+        ui_part = map_optimizer_part_to_ui(part_key)
+
+        # Exclude logic: allow excluding, but never exclude core parts (CPU/VGA)
+        if ui_part in ex and ui_part not in CORE_PARTS:
+            debug_info["excluded_ui_parts"].append(ui_part)
             continue
 
         brand = str(row.get("BRAND", "")) if hasattr(row, "get") else ""
         model = str(row.get("MODEL", "")) if hasattr(row, "get") else ""
         price = safe_float(row.get("abs_price", 0)) if hasattr(row, "get") else 0.0
 
-        # Use CSV detail column (prefer Detail/detail), fallback to score if missing
-        detail_val = ""
+        # Detail from CSV (robust)
+        detail_val = pick_detail_from_row(row)
 
-        if hasattr(row, "to_dict"):
-            row_dict = row.to_dict()
-            norm = {str(k).strip().lower(): k for k in row_dict.keys()}
+        # Fallback to score only if detail truly missing
+        if detail_val == "" and hasattr(row, "get") and ("總分" in row):
+            detail_val = f"score={safe_float(row.get('總分')):.2f}"
 
-            for want in ["detail", "description", "spec", "specification", "細節", "描述", "規格", "說明"]:
-                k = norm.get(want.strip().lower())
-                if k is not None:
-                    v = row_dict.get(k, "")
-                    if v is not None:
-                        v = str(v).strip()
-                        if v != "" and v.lower() != "nan":
-                            detail_val = v
-                            break
+        items.append(
+            {
+                "part": ui_part,
+                "brand": brand,
+                "model": model,
+                "detail": detail_val,
+                "price": int(round(price)),
+            }
+        )
+        debug_info["kept_ui_parts"].append(ui_part)
 
-            if detail_val == "" and hasattr(row, "get") and "總分" in row:
-                detail_val = f"score={safe_float(row.get('總分')):.2f}"
-
-            detail = detail_val
+    items.sort(key=lambda x: ORDER.index(x["part"]) if x["part"] in ORDER else 999)
+    return items, debug_info
 
 
 # =========================
-# 4) Page
+# Page
 # =========================
 st.set_page_config(page_title="PC Builder", layout="wide")
 st.title("PC Builder")
 
 with st.sidebar:
-    st.caption(
-        "This UI calls your optimizer (optimization.py) and reads CSV files from /data in this GitHub repo."
-    )
-    st.caption(
-        "If deployment fails, check: file names in /data and columns "
-        "(BRAND/MODEL/總分/price_分數 or Price_分數)."
-    )
+    st.caption("Reads CSV from /data in this GitHub repo and calls optimization.py (PCBuilderAI).")
+    st.caption("Tip: If output is empty, check Exclude selections + optimizer keys in Debug.")
 
 # Session state init
 if "spec_rows" not in st.session_state:
@@ -156,9 +214,8 @@ if "spec_rows" not in st.session_state:
 if "exclude_rows" not in st.session_state:
     st.session_state.exclude_rows = [{"part": ""}]
 
-
 # =========================
-# 5) Basic Options
+# Basic Options
 # =========================
 st.subheader("Basic Options")
 c1, c2 = st.columns(2)
@@ -175,9 +232,8 @@ with c2:
     )
     purpose_val = None if purpose_key == "" else purpose_key
 
-
 # =========================
-# 6) Advanced Options
+# Advanced Options
 # =========================
 st.subheader("Advanced Options")
 c3, c4, c5, c6 = st.columns(4)
@@ -216,9 +272,8 @@ with c6:
 
 st.divider()
 
-
 # =========================
-# 7) Specify component -> brand (multiple)
+# Specify Components -> Brand (Multiple Allowed)
 # =========================
 st.markdown("### Specify Components → Specify Brand (Multiple Allowed)")
 
@@ -261,9 +316,8 @@ for i, row in enumerate(st.session_state.spec_rows):
 
 st.divider()
 
-
 # =========================
-# 8) Exclude components (multiple)
+# Exclude Components (Multiple Allowed)
 # =========================
 st.markdown("### Exclude Components (Multiple Allowed)")
 
@@ -295,7 +349,9 @@ for i, row in enumerate(st.session_state.exclude_rows):
     with b:
         st.button("Remove", key=f"btn_rm_ex_{i}", on_click=remove_exclude, args=(i,))
 
-# Build payload from UI
+# =========================
+# Payload
+# =========================
 specified = [{"part": r["part"], "brand": r["brand"]} for r in st.session_state.spec_rows if r["part"]]
 excludes = [r["part"] for r in st.session_state.exclude_rows if r["part"]]
 
@@ -313,12 +369,12 @@ payload: Dict[str, Any] = {
 with st.expander("Payload (debug)"):
     st.json(payload)
 
-
 # =========================
-# 9) Run optimizer and output
+# Run optimizer and output
 # =========================
 if st.button("Generate Results", type="primary", key="btn_generate"):
-    cpu_brand = None
+    # Convert UI -> optimizer prefs
+    cpu_brand: Optional[str] = None
     brand_overrides: Dict[str, str] = {}
 
     for s in specified:
@@ -330,7 +386,6 @@ if st.button("Generate Results", type="primary", key="btn_generate"):
         if part == "CPU":
             cpu_brand = brand
         else:
-            # Optional extra info (won't break if optimizer ignores it)
             if part == "CASE":
                 brand_overrides["CHASSIS"] = brand
             elif part in {"AIO", "COOLER"}:
@@ -339,23 +394,31 @@ if st.button("Generate Results", type="primary", key="btn_generate"):
                 brand_overrides[part] = brand
 
     prefs = {
-        "color": color_val,  # 'white' or 'black'
+        "color": color_val,
         "cpu_brand": cpu_brand if isinstance(cpu_brand, str) else "",
-        "cooling": cooling_val,  # 'water' or 'heat'
-        "brand_overrides": brand_overrides,  # optional (if your optimizer supports later)
-        "purpose": purpose_val,  # optional, kept for future
-        "rgb": rgb_val,  # optional, kept for future
-        "ram": ram_val,  # optional, kept for future
+        "cooling": cooling_val,
+        "brand_overrides": brand_overrides,
+        "purpose": purpose_val,
+        "rgb": rgb_val,
+        "ram": ram_val,
     }
 
     try:
         ai = get_ai()
         final_build, total_cost = ai.optimize_build(budget_val, prefs)
 
-        items = build_items_from_optimizer(final_build, cooling_val, excludes)
+        items, dbg = build_items_from_optimizer(final_build, excludes, debug=True)
+
+        with st.expander("Debug (optimizer keys / exclusions)"):
+            st.write("Optimizer returned keys:", dbg["optimizer_keys"])
+            st.write("Excluded UI parts:", dbg["excluded_ui_parts"])
+            st.write("Kept UI parts:", dbg["kept_ui_parts"])
 
         if not items:
-            st.warning("No results returned (possibly excluded everything).")
+            st.warning(
+                "No results returned. This usually means you excluded everything.\n\n"
+                "Tip: Remove some excludes (CPU/VGA are always kept)."
+            )
         else:
             df = pd.DataFrame(items)
             df["part"] = df["part"].map(lambda x: PART_LABEL.get(x, x))
@@ -365,7 +428,6 @@ if st.button("Generate Results", type="primary", key="btn_generate"):
 
             st.subheader("Output")
             st.dataframe(df, use_container_width=True)
-
             st.markdown(f"### Total Price: **{total_price:,} NTD**")
 
             st.download_button(
