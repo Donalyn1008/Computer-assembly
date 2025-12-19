@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any, Dict, List
+
 import pandas as pd
 import streamlit as st
 
@@ -28,7 +29,6 @@ FILES = {
     "WATER": "data/WATER_labeled.csv_ranking_result.csv",
     "FAN": "data/FAN_labeled.csv_ranking_result.csv",
 }
-
 
 # =========================
 # 3) UI constants
@@ -91,7 +91,11 @@ def get_ai() -> PCBuilderAI:
     return PCBuilderAI(FILES)
 
 
-def build_items_from_optimizer(build: Dict[str, Any], cooling: str, excludes: List[str]) -> List[Dict[str, Any]]:
+def build_items_from_optimizer(
+    build: Dict[str, Any],
+    cooling: str,
+    excludes: List[str],
+) -> List[Dict[str, Any]]:
     """
     build: dict returned by ai.optimize_build -> {part_key: pd.Series}
     """
@@ -104,29 +108,27 @@ def build_items_from_optimizer(build: Dict[str, Any], cooling: str, excludes: Li
         if ui_part in ex:
             continue
 
-        # Your CSVs use BRAND / MODEL / 總分 / abs_price
         brand = str(row.get("BRAND", "")) if hasattr(row, "get") else ""
         model = str(row.get("MODEL", "")) if hasattr(row, "get") else ""
-
         price = safe_float(row.get("abs_price", 0)) if hasattr(row, "get") else 0.0
+
         # Use CSV detail column (prefer Detail/detail), fallback to score if missing
-detail_val = ""
-if hasattr(row, "get"):
-    if "Detail" in row:
-        detail_val = str(row.get("Detail", "") or "")
-    elif "detail" in row:
-        detail_val = str(row.get("detail", "") or "")
-    elif "DETAIL" in row:
-        detail_val = str(row.get("DETAIL", "") or "")
+        detail_val = ""
+        if hasattr(row, "get"):
+            if "Detail" in row:
+                detail_val = str(row.get("Detail", "") or "")
+            elif "detail" in row:
+                detail_val = str(row.get("detail", "") or "")
+            elif "DETAIL" in row:
+                detail_val = str(row.get("DETAIL", "") or "")
 
-detail_val = detail_val.strip()
+        detail_val = detail_val.strip()
 
-# Fallback: if your CSV doesn't have Detail/detail, show score
-if detail_val == "" and hasattr(row, "get") and "總分" in row:
-    detail_val = f"score={safe_float(row.get('總分')):.2f}"
+        # Fallback: if your CSV doesn't have Detail/detail, show score
+        if detail_val == "" and hasattr(row, "get") and "總分" in row:
+            detail_val = f"score={safe_float(row.get('總分')):.2f}"
 
-detail = detail_val
-
+        detail = detail_val
 
         items.append(
             {
@@ -149,8 +151,13 @@ st.set_page_config(page_title="PC Builder", layout="wide")
 st.title("PC Builder")
 
 with st.sidebar:
-    st.caption("This UI calls your optimizer (optimization.py) and reads CSV files from /data in this GitHub repo.")
-    st.caption("If deployment fails, check: file names in /data and columns (BRAND/MODEL/總分/price_分數 or Price_分數).")
+    st.caption(
+        "This UI calls your optimizer (optimization.py) and reads CSV files from /data in this GitHub repo."
+    )
+    st.caption(
+        "If deployment fails, check: file names in /data and columns "
+        "(BRAND/MODEL/總分/price_分數 or Price_分數)."
+    )
 
 # Session state init
 if "spec_rows" not in st.session_state:
@@ -164,9 +171,11 @@ if "exclude_rows" not in st.session_state:
 # =========================
 st.subheader("Basic Options")
 c1, c2 = st.columns(2)
+
 with c1:
     budget = st.number_input("Budget limit", min_value=0, value=50000, step=1000)
     budget_val = int(budget)
+
 with c2:
     purpose_key = st.selectbox(
         "Purpose",
@@ -183,7 +192,11 @@ st.subheader("Advanced Options")
 c3, c4, c5, c6 = st.columns(4)
 
 with c3:
-    color = st.selectbox("Color", ["black", "white"], format_func=lambda x: "Black" if x == "black" else "White")
+    color = st.selectbox(
+        "Color",
+        ["black", "white"],
+        format_func=lambda x: "Black" if x == "black" else "White",
+    )
     color_val = color
 
 with c4:
@@ -195,7 +208,11 @@ with c4:
     rgb_val = None if rgb == "" else rgb
 
 with c5:
-    ram = st.selectbox("RAM (GB)", [""] + RAM_OPTIONS, format_func=lambda x: "Not specified" if x == "" else str(x))
+    ram = st.selectbox(
+        "RAM (GB)",
+        [""] + RAM_OPTIONS,
+        format_func=lambda x: "Not specified" if x == "" else str(x),
+    )
     ram_val = None if ram == "" else int(ram)
 
 with c6:
@@ -240,8 +257,6 @@ for i, row in enumerate(st.session_state.spec_rows):
         st.session_state.spec_rows[i]["part"] = part
 
     with b:
-        # Brand is free-text to avoid depending on a brand list
-        # (Your optimizer currently only guarantees CPU brand filter; others are optional)
         brand = st.text_input(
             f"Brand #{i+1} (optional)",
             value=row.get("brand", ""),
@@ -275,6 +290,7 @@ st.button("➕ Add one more", on_click=add_exclude, key="btn_add_exclude")
 
 for i, row in enumerate(st.session_state.exclude_rows):
     a, b = st.columns([4, 1])
+
     with a:
         ex = st.selectbox(
             f"Exclude component #{i+1}",
@@ -284,6 +300,7 @@ for i, row in enumerate(st.session_state.exclude_rows):
             format_func=part_fmt,
         )
         st.session_state.exclude_rows[i]["part"] = ex
+
     with b:
         st.button("Remove", key=f"btn_rm_ex_{i}", on_click=remove_exclude, args=(i,))
 
@@ -310,7 +327,6 @@ with st.expander("Payload (debug)"):
 # 9) Run optimizer and output
 # =========================
 if st.button("Generate Results", type="primary", key="btn_generate"):
-    # Convert UI -> optimizer prefs
     cpu_brand = None
     brand_overrides: Dict[str, str] = {}
 
@@ -320,12 +336,10 @@ if st.button("Generate Results", type="primary", key="btn_generate"):
         if not part or not brand:
             continue
 
-        # CPU brand (your optimizer uses prefs['cpu_brand'])
         if part == "CPU":
             cpu_brand = brand
         else:
             # Optional extra info (won't break if optimizer ignores it)
-            # CASE in UI corresponds to CHASSIS in optimizer
             if part == "CASE":
                 brand_overrides["CHASSIS"] = brand
             elif part in {"AIO", "COOLER"}:
@@ -334,13 +348,13 @@ if st.button("Generate Results", type="primary", key="btn_generate"):
                 brand_overrides[part] = brand
 
     prefs = {
-        "color": color_val,         # 'white' or 'black'
-        "cpu_brand": cpu_brand if isinstance(cpu_brand, str) else "",    # Intel / AMD / etc.
-        "cooling": cooling_val,     # 'water' or 'heat'
+        "color": color_val,  # 'white' or 'black'
+        "cpu_brand": cpu_brand if isinstance(cpu_brand, str) else "",
+        "cooling": cooling_val,  # 'water' or 'heat'
         "brand_overrides": brand_overrides,  # optional (if your optimizer supports later)
-        "purpose": purpose_val,     # optional, kept for future
-        "rgb": rgb_val,             # optional, kept for future
-        "ram": ram_val,             # optional, kept for future
+        "purpose": purpose_val,  # optional, kept for future
+        "rgb": rgb_val,  # optional, kept for future
+        "ram": ram_val,  # optional, kept for future
     }
 
     try:
@@ -348,6 +362,7 @@ if st.button("Generate Results", type="primary", key="btn_generate"):
         final_build, total_cost = ai.optimize_build(budget_val, prefs)
 
         items = build_items_from_optimizer(final_build, cooling_val, excludes)
+
         if not items:
             st.warning("No results returned (possibly excluded everything).")
         else:
@@ -369,7 +384,6 @@ if st.button("Generate Results", type="primary", key="btn_generate"):
                 mime="text/csv",
             )
 
-            # Show optimizer-reported total (if you want to compare)
             st.caption(f"Optimizer reported total (debug): {int(round(total_cost)):,} NTD")
 
     except Exception as e:
