@@ -109,12 +109,24 @@ def build_items_from_optimizer(build: Dict[str, Any], cooling: str, excludes: Li
         model = str(row.get("MODEL", "")) if hasattr(row, "get") else ""
 
         price = safe_float(row.get("abs_price", 0)) if hasattr(row, "get") else 0.0
-        score = row.get("總分", None) if hasattr(row, "get") else None
+        # Use CSV detail column (prefer Detail/detail), fallback to score if missing
+detail_val = ""
+if hasattr(row, "get"):
+    if "Detail" in row:
+        detail_val = str(row.get("Detail", "") or "")
+    elif "detail" in row:
+        detail_val = str(row.get("detail", "") or "")
+    elif "DETAIL" in row:
+        detail_val = str(row.get("DETAIL", "") or "")
 
-        detail_parts = []
-        if score is not None:
-            detail_parts.append(f"score={safe_float(score):.2f}")
-        detail = " | ".join(detail_parts) if detail_parts else ""
+detail_val = detail_val.strip()
+
+# Fallback: if your CSV doesn't have Detail/detail, show score
+if detail_val == "" and hasattr(row, "get") and "總分" in row:
+    detail_val = f"score={safe_float(row.get('總分')):.2f}"
+
+detail = detail_val
+
 
         items.append(
             {
