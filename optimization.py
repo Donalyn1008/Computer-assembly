@@ -49,8 +49,11 @@ class PCBuilderAI:
             df = self.data[part].copy()
 
             # User brand filter (CPU only)
-            if part == "CPU" and "cpu_brand" in prefs:
-                df = df[df["BRAND"].str.contains(prefs["cpu_brand"], case=False)]
+            if part == "CPU":
+                cpu_brand = prefs.get("cpu_brand")
+                if isinstance(cpu_brand, str) and cpu_brand.strip():
+                    df = df[df["BRAND"].astype(str).str.contains(cpu_brand.strip(), case=False, na=False)]
+
 
             # Budget filter
             part_limit = total_budget * weights[part]
