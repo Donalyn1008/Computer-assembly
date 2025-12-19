@@ -11,7 +11,9 @@ class PCBuilderAI:
         for key, path in file_map.items():
             try:
                 df = pd.read_csv(path)
-
+                df.columns = df.columns.astype(str).str.strip()
+                df.columns = df.columns.str.replace("\u3000", " ", regex=False).str.strip()
+                
                 # Normalize price score to positive values
                 if "price_分數" in df.columns:
                     df["abs_price"] = df["price_分數"].abs()
