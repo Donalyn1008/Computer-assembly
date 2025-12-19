@@ -323,7 +323,7 @@ if st.button("Generate Results", type="primary", key="btn_generate"):
 
     prefs = {
         "color": color_val,         # 'white' or 'black'
-        "cpu_brand": cpu_brand,     # Intel / AMD / etc.
+        "cpu_brand": cpu_brand if isinstance(cpu_brand, str) else "",    # Intel / AMD / etc.
         "cooling": cooling_val,     # 'water' or 'heat'
         "brand_overrides": brand_overrides,  # optional (if your optimizer supports later)
         "purpose": purpose_val,     # optional, kept for future
