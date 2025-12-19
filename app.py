@@ -114,34 +114,25 @@ def build_items_from_optimizer(
 
         # Use CSV detail column (prefer Detail/detail), fallback to score if missing
         detail_val = ""
-        if hasattr(row, "get"):
-            if "Detail" in row:
-                detail_val = str(row.get("Detail", "") or "")
-            elif "detail" in row:
-                detail_val = str(row.get("detail", "") or "")
-            elif "DETAIL" in row:
-                detail_val = str(row.get("DETAIL", "") or "")
 
-        detail_val = detail_val.strip()
+        if hasattr(row, "to_dict"):
+            row_dict = row.to_dict()
+            norm = {str(k).strip().lower(): k for k in row_dict.keys()}
 
-        # Fallback: if your CSV doesn't have Detail/detail, show score
-        if detail_val == "" and hasattr(row, "get") and "總分" in row:
-            detail_val = f"score={safe_float(row.get('總分')):.2f}"
+            for want in ["detail", "description", "spec", "specification", "細節", "描述", "規格", "說明"]:
+                k = norm.get(want.strip().lower())
+                if k is not None:
+                    v = row_dict.get(k, "")
+                    if v is not None:
+                        v = str(v).strip()
+                        if v != "" and v.lower() != "nan":
+                            detail_val = v
+                            break
 
-        detail = detail_val
+            if detail_val == "" and hasattr(row, "get") and "總分" in row:
+                detail_val = f"score={safe_float(row.get('總分')):.2f}"
 
-        items.append(
-            {
-                "part": ui_part,
-                "brand": brand,
-                "model": model,
-                "detail": detail,
-                "price": int(round(price)),
-            }
-        )
-
-    items.sort(key=lambda x: ORDER.index(x["part"]) if x["part"] in ORDER else 999)
-    return items
+            detail = detail_val
 
 
 # =========================
