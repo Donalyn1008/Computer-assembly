@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 import pandas as pd
 import streamlit as st
 
@@ -24,7 +24,7 @@ FILES = {
 }
 
 # =========================
-# UI Component Options (LIMITED)
+# UI Component Options
 # =========================
 COMPONENT_OPTIONS = [
     ("CPU", "CPU"),
@@ -37,11 +37,20 @@ COMPONENT_OPTIONS = [
     ("COOLER", "Air Cooler"),
     ("FAN", "Fan"),
 ]
-
 COMP_CODES = [x[0] for x in COMPONENT_OPTIONS]
 COMP_LABEL = {x[0]: x[1] for x in COMPONENT_OPTIONS}
 
 ORDER = ["CPU", "MB", "RAM", "VGA", "SSD", "HDD", "PSU", "COOLER", "FAN"]
+
+# =========================
+# Purpose options (⬅️ 補回來)
+# =========================
+PURPOSES = {
+    "programming": "Programming",
+    "graphic_design": "Graphic Design",
+    "video_editing": "Video Editing",
+    "word_processing": "Word Processing",
+}
 
 # =========================
 # Helpers
@@ -62,16 +71,10 @@ def pick_detail(row: Any) -> str:
         return ""
 
     d = row.to_dict()
-    norm_map = {normalize_col(k): k for k in d.keys()}
+    norm = {normalize_col(k): k for k in d.keys()}
 
-    candidates = [
-        "detail", "description", "spec",
-        "規格", "描述", "細節", "說明",
-        "商品描述", "商品規格"
-    ]
-
-    for c in candidates:
-        k = norm_map.get(normalize_col(c))
+    for c in ["detail", "description", "spec", "規格", "描述", "細節", "說明"]:
+        k = norm.get(normalize_col(c))
         if k:
             v = str(d.get(k, "")).strip()
             if v and v.lower() != "nan":
@@ -84,27 +87,20 @@ def get_ai() -> PCBuilderAI:
     return PCBuilderAI(FILES)
 
 
-def optimizer_key_to_ui(key: str) -> str:
-    if key == "HEAT":
+def optimizer_key_to_ui(k: str) -> str:
+    if k in {"HEAT", "WATER"}:
         return "COOLER"
-    if key == "WATER":
-        return "COOLER"
-    return key
+    return k
 
 
 def build_items(build: Dict[str, Any], excludes: List[str]) -> List[Dict[str, Any]]:
-    items: List[Dict[str, Any]] = []
-    ex = set(excludes or [])
+    items = []
+    ex = set(excludes)
 
     for k, row in build.items():
         ui_part = optimizer_key_to_ui(k)
-
         if ui_part in ex:
             continue
-
-        brand = str(row.get("BRAND", ""))
-        model = str(row.get("MODEL", ""))
-        price = int(round(safe_float(row.get("abs_price", 0))))
 
         detail = pick_detail(row)
         if not detail and "總分" in row:
@@ -112,10 +108,10 @@ def build_items(build: Dict[str, Any], excludes: List[str]) -> List[Dict[str, An
 
         items.append({
             "part": ui_part,
-            "brand": brand,
-            "model": model,
+            "brand": str(row.get("BRAND", "")),
+            "model": str(row.get("MODEL", "")),
             "detail": detail,
-            "price": price,
+            "price": int(round(safe_float(row.get("abs_price", 0)))),
         })
 
     items.sort(key=lambda x: ORDER.index(x["part"]) if x["part"] in ORDER else 999)
@@ -129,7 +125,7 @@ st.set_page_config(page_title="PC Builder", layout="wide")
 st.title("PC Builder")
 
 # =========================
-# Session State
+# Session state
 # =========================
 if "spec_rows" not in st.session_state:
     st.session_state.spec_rows = [{"part": "", "brand": ""}]
@@ -140,8 +136,16 @@ if "exclude_rows" not in st.session_state:
 # Basic Options
 # =========================
 st.subheader("Basic Options")
+
 budget = st.number_input("Budget", min_value=0, value=50000, step=1000)
 budget_val = int(budget)
+
+purpose_key = st.selectbox(
+    "Purpose",
+    [""] + list(PURPOSES.keys()),
+    format_func=lambda k: "Select purpose..." if k == "" else PURPOSES[k],
+)
+purpose_val = None if purpose_key == "" else purpose_key
 
 # =========================
 # Specify Components
@@ -168,12 +172,7 @@ for i, row in enumerate(st.session_state.spec_rows):
         )
         st.session_state.spec_rows[i]["part"] = part
     with c2:
-        brand = st.text_input(
-            f"Brand #{i+1}",
-            value=row["brand"],
-            key=f"spec_brand_{i}",
-            placeholder="optional",
-        )
+        brand = st.text_input(f"Brand #{i+1}", value=row["brand"], key=f"spec_brand_{i}")
         st.session_state.spec_rows[i]["brand"] = brand.strip()
     with c3:
         st.button("Remove", key=f"rm_spec_{i}", on_click=remove_spec, args=(i,))
@@ -220,25 +219,20 @@ if st.button("Generate Result", type="primary"):
     prefs = {
         "cpu_brand": cpu_brand or "",
         "cooling": "heat",
+        "purpose": purpose_val,  # ⬅️ 關鍵：用途有進 prefs
     }
 
-    try:
-        ai = get_ai()
-        build, total_cost = ai.optimize_build(budget_val, prefs)
+    ai = get_ai()
+    build, _ = ai.optimize_build(budget_val, prefs)
+    items = build_items(build, excludes)
 
-        items = build_items(build, excludes)
+    if not items:
+        st.warning("No results (everything excluded).")
+    else:
+        df = pd.DataFrame(items)
+        df["part"] = df["part"].map(COMP_LABEL)
+        df = df[["part", "brand", "model", "detail", "price"]]
 
-        if not items:
-            st.warning("No results (everything excluded).")
-        else:
-            df = pd.DataFrame(items)
-            df["part"] = df["part"].map(COMP_LABEL)
-            df = df[["part", "brand", "model", "detail", "price"]]
-
-            st.subheader("Output")
-            st.dataframe(df, use_container_width=True)
-            st.markdown(f"### Total Price: **{df['price'].sum():,} NTD**")
-
-    except Exception as e:
-        st.error("Optimizer failed.")
-        st.exception(e)
+        st.subheader("Output")
+        st.dataframe(df, use_container_width=True)
+        st.markdown(f"### Total Price: **{df['price'].sum():,} NTD**")
