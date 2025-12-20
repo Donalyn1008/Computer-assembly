@@ -1,20 +1,17 @@
 from __future__ import annotations
-
 import pandas as pd
 import numpy as np
-
 
 class PCBuilderAI:
     def __init__(self, file_map: dict[str, str]):
         self.data: dict[str, pd.DataFrame] = {}
-
         for key, path in file_map.items():
             try:
                 df = pd.read_csv(path)
                 df.columns = df.columns.astype(str).str.strip()
                 df.columns = df.columns.str.replace("\u3000", " ", regex=False).str.strip()
                 
-                # Normalize price score to positive values
+              
                 if "price_分數" in df.columns:
                     df["abs_price"] = df["price_分數"].abs()
                 elif "Price_分數" in df.columns:
@@ -22,151 +19,91 @@ class PCBuilderAI:
                 elif "Price" in df.columns:
                     df["abs_price"] = pd.to_numeric(df["Price"], errors="coerce").fillna(0).abs()
                 else:
-                    # still allow running, but prices will be 0
                     df["abs_price"] = 0
-
                 self.data[key] = df
-
             except Exception as e:
-                # Do NOT crash at init; just record missing dataset
                 print(f"[WARN] Failed to read '{key}' from '{path}': {e}")
 
     def _safe_str(self, x) -> str:
-        """Convert anything to a safe string for matching."""
-        if x is None:
-            return ""
-        # handle numpy/pandas NaN
+        if x is None: return ""
         try:
-            if pd.isna(x):
-                return ""
-        except Exception:
-            pass
+            if pd.isna(x): return ""
+        except: pass
         return str(x).strip()
 
     def optimize_build(self, total_budget: int, prefs: dict) -> tuple[dict[str, pd.Series], float]:
-        """
-        total_budget: e.g. 50000
-        prefs: {
-            'color': 'white' or 'black',
-            'cpu_brand': 'Intel' or 'AMD' or '',
-            'cooling': 'water' or 'heat'
-        }
-        """
 
-        # Ensure required core datasets exist
-        missing = [k for k in ["CPU", "VGA", "CHASSIS"] if k not in self.data]
-        if missing:
-            raise KeyError(
-                f"Missing required datasets: {missing}. "
-                f"Loaded keys = {sorted(self.data.keys())}. "
-                f"Check your /data filenames and FILE_MAP paths."
-            )
-
-        # 1) Budget weight allocation
         weights = {
             "VGA": 0.35, "CPU": 0.20, "MB": 0.12, "RAM": 0.08,
             "SSD": 0.07, "PSU": 0.07, "CHASSIS": 0.06, "FAN": 0.02, "HDD": 0.03
         }
 
+        purpose = prefs.get("purpose")
+        if purpose == "programming":
+            weights["CPU"], weights["RAM"], weights["VGA"] = 0.35, 0.20, 0.10
+        elif purpose == "video_editing":
+            weights["CPU"], weights["RAM"], weights["SSD"] = 0.30, 0.15, 0.15
+        elif purpose == "word_processing":
+            weights["CPU"], weights["VGA"], weights["RAM"] = 0.25, 0.05, 0.10
+            # 文書機通常不需要獨立顯卡，若無顯卡預算，後續過濾會選最便宜的
+
         cooling_pref = self._safe_str(prefs.get("cooling"))
         cooling_type = "WATER" if cooling_pref.lower() == "water" else "HEAT"
         weights[cooling_type] = 0.05
 
-        color_pref = self._safe_str(prefs.get("color")).lower()  # 'white' or 'black'
-        cpu_brand = self._safe_str(prefs.get("cpu_brand"))       # safe string always
+
+        specified_brands = prefs.get("specified_brands", {}) # 格式: {'CPU': 'Intel', 'VGA': 'ASUS'}
 
         build: dict[str, pd.Series] = {}
         current_spent = 0.0
 
-        # --- Stage A: Core parts (CPU & VGA) ---
         for part in ["CPU", "VGA"]:
+            if part not in self.data: continue
             df = self.data[part].copy()
 
-            # CPU brand filter (SAFE)
-            if part == "CPU" and cpu_brand != "" and "BRAND" in df.columns:
-                df = df[df["BRAND"].astype(str).str.contains(cpu_brand, case=False, na=False, regex=False)]
+        
+            target_brand = specified_brands.get(part, "")
+            if target_brand and "BRAND" in df.columns:
+                df = df[df["BRAND"].astype(str).str.contains(target_brand, case=False, na=False)]
 
-            # Budget filter
-            part_limit = float(total_budget) * float(weights.get(part, 0.10))
-            if "abs_price" in df.columns:
-                affordable = df[df["abs_price"] <= part_limit]
-            else:
-                affordable = df
-
+            part_limit = float(total_budget) * weights.get(part, 0.10)
+            affordable = df[df["abs_price"] <= part_limit] if "abs_price" in df.columns else df
             target = affordable if not affordable.empty else df
-            if target.empty:
-                raise ValueError(f"Dataset '{part}' has no rows after filtering.")
+            
+            if not target.empty:
+                choice = target.sort_values("總分", ascending=False).iloc[0]
+                build[part] = choice
+                current_spent += float(choice.get("abs_price", 0))
 
-            # Pick the highest score
-            if "總分" not in target.columns:
-                raise KeyError(f"Dataset '{part}' missing required column '總分'.")
-
-            choice = target.sort_values("總分", ascending=False).iloc[0]
-            build[part] = choice
-            current_spent += float(choice.get("abs_price", 0))
-
-        # --- Stage B: Compatibility chain filtering (Case GPU length + color) ---
-        chassis_df = self.data["CHASSIS"].copy()
-
-        vga_length_score = build["VGA"].get("Length_分數", 0)
-        if "GPU_Max_Length_分數" in chassis_df.columns:
-            chassis_df = chassis_df[chassis_df["GPU_Max_Length_分數"] >= vga_length_score]
-
-        if color_pref == "white" and "white_分數" in chassis_df.columns:
-            chassis_df = chassis_df[chassis_df["white_分數"] > 0]
-
-        # --- Stage C: Remaining parts ---
+        chassis_df = self.data.get("CHASSIS", pd.DataFrame()).copy()
+        if not chassis_df.empty and "VGA" in build:
+            vga_len = build["VGA"].get("Length_分數", 0)
+            if "GPU_Max_Length_分數" in chassis_df.columns:
+                chassis_df = chassis_df[chassis_df["GPU_Max_Length_分數"] >= vga_len]
+        
         remaining_parts = ["MB", "RAM", "SSD", "HDD", "PSU", "CHASSIS", "FAN", cooling_type]
-
         for part in remaining_parts:
             if part == "CHASSIS":
-                df = chassis_df.copy()
-            else:
-                if part not in self.data:
-                    # allow missing optional datasets
-                    continue
+                df = chassis_df
+            elif part in self.data:
                 df = self.data[part].copy()
-
-            # Color filter
-            if color_pref == "white" and "white_分數" in df.columns:
-                df = df[df["white_分數"] > 0]
-
-            # Dynamic budget allocation
-            remaining_budget = float(total_budget) - current_spent
-            limit = max(remaining_budget * 0.15, 1000.0)
-
-            affordable = df[df["abs_price"] <= limit] if "abs_price" in df.columns else df
-            target = affordable if not affordable.empty else df.sort_values("abs_price") if "abs_price" in df.columns else df
-
-            if target.empty:
+            else:
                 continue
 
-            if "總分" not in target.columns:
-                raise KeyError(f"Dataset '{part}' missing required column '總分'.")
+            target_brand = specified_brands.get(part, "")
+            if target_brand and "BRAND" in df.columns:
+                df = df[df["BRAND"].astype(str).str.contains(target_brand, case=False, na=False)]
 
-            choice = target.sort_values("總分", ascending=False).iloc[0]
-            build[part] = choice
-            current_spent += float(choice.get("abs_price", 0))
+            remaining_budget = float(total_budget) - current_spent
+      
+            limit = max(remaining_budget * 0.2, 500.0) 
+
+            affordable = df[df["abs_price"] <= limit] if "abs_price" in df.columns else df
+            target = affordable if not affordable.empty else df.sort_values("abs_price")
+
+            if not target.empty:
+                choice = target.sort_values("總分", ascending=False).iloc[0]
+                build[part] = choice
+                current_spent += float(choice.get("abs_price", 0))
 
         return build, current_spent
-
-
-# =========================
-# Local test (ONLY runs when executing this file directly)
-# =========================
-if __name__ == "__main__":
-    files = {
-        "CPU": "data/CPU_labeled.csv_ranking_result.csv",
-        "MB": "data/MB_Labled.csv_ranking_result.csv",
-        "CHASSIS": "data/CHASSIS_labeled.csv_ranking_result.csv",
-        "PSU": "data/PSU_labeled.csv_ranking_result.csv",
-        "VGA": "data/VGA_labeled.csv_ranking_result.csv",
-        "RAM": "data/RAM_labeled.csv_ranking_result.csv",
-        "SSD": "data/SSD_Labled.csv_ranking_result.csv",
-        "HDD": "data/HDD_Labled.csv_ranking_result.csv",
-        "HEAT": "data/HEAT_labeled.csv_ranking_result.csv",
-        "WATER": "data/WATER_labeled.csv_ranking_result.csv",
-        "FAN": "data/FAN_labeled.csv_ranking_result.csv",
-    }
-
-   # ai = PCBuilderAI(files)
