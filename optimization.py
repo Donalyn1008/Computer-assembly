@@ -169,25 +169,4 @@ if __name__ == "__main__":
         "FAN": "data/FAN_labeled.csv_ranking_result.csv",
     }
 
-    ai = PCBuilderAI(files)
-
-    USER_BUDGET = 50000
-    USER_PREFS = {
-        "color": "black",
-        "cpu_brand": "Intel",
-        "cooling": "heat",
-    }
-
-    build, total_cost = ai.optimize_build(USER_BUDGET, USER_PREFS)
-
-    print("=" * 50)
-    print(f"🚀 AI Optimized Build (Budget: {USER_BUDGET})")
-    print("=" * 50)
-    for part, row in build.items():
-        price = float(row.get("abs_price", 0))
-        brand = str(row.get("BRAND", ""))
-        model = str(row.get("MODEL", ""))
-        score = float(row.get("總分", 0))
-        print(f"[{part:7}] {brand:<10} | {model:<35} | score: {score:>8.2f} | price: {price:>8.0f}")
-    print("=" * 50)
-    print(f"✅ Total Cost: {total_cost:.0f}")
+   # ai = PCBuilderAI(files)
