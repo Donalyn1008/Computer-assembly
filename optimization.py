@@ -3,129 +3,98 @@ import pandas as pd
 import numpy as np
 import random
 
+TOP_K = 3   
 
 class PCBuilderAI:
     def __init__(self, file_map: dict[str, str]):
         self.data: dict[str, pd.DataFrame] = {}
 
         for key, path in file_map.items():
-            try:
-                df = pd.read_csv(path)
+            df = pd.read_csv(path)
+            df.columns = (
+                df.columns.astype(str)
+                .str.replace("\u3000", " ", regex=False)
+                .str.strip()
+            )
 
-                # ---------- normalize columns ----------
-                df.columns = (
-                    df.columns.astype(str)
-                    .str.replace("\u3000", " ", regex=False)
-                    .str.strip()
-                )
+            if "price_分數" in df.columns:
+                df["abs_price"] = df["price_分數"].abs()
+            elif "Price" in df.columns:
+                df["abs_price"] = pd.to_numeric(df["Price"], errors="coerce").fillna(0)
+            else:
+                df["abs_price"] = 0
 
-                # ---------- price ----------
-                if "price_分數" in df.columns:
-                    df["abs_price"] = pd.to_numeric(df["price_分數"], errors="coerce").abs()
-                elif "Price_分數" in df.columns:
-                    df["abs_price"] = pd.to_numeric(df["Price_分數"], errors="coerce").abs()
-                elif "Price" in df.columns:
-                    df["abs_price"] = pd.to_numeric(df["Price"], errors="coerce").abs()
-                else:
-                    df["abs_price"] = np.inf
+            self.data[key] = df
 
-                # ---------- score ----------
-                if "總分" not in df.columns:
-                    num_cols = df.select_dtypes(include=[np.number]).columns
-                    df["總分"] = df[num_cols].mean(axis=1) if len(num_cols) else 0.0
+    # -------------------------
+    # 相容性檢查
+    # -------------------------
+    def _compatible(self, build, part, row) -> bool:
+        if part == "MB" and "CPU" in build:
+            if "Socket" in row and "Socket" in build["CPU"]:
+                return row["Socket"] == build["CPU"]["Socket"]
 
-                # ---------- key mapping ----------
-                store_key = "COOLER" if key in {"HEAT", "WATER"} else key
-                self.data.setdefault(store_key, pd.DataFrame())
-                self.data[store_key] = pd.concat(
-                    [self.data[store_key], df], ignore_index=True
-                )
+        if part == "RAM" and "MB" in build:
+            if "RAM_Type" in row and "RAM_Type" in build["MB"]:
+                return row["RAM_Type"] == build["MB"]["RAM_Type"]
 
-            except Exception as e:
-                print(f"[WARN] Failed loading {key}: {e}")
+        if part == "CHASSIS" and "VGA" in build:
+            if "GPU_Max_Length" in row and "Length" in build["VGA"]:
+                return row["GPU_Max_Length"] >= build["VGA"]["Length"]
 
-    # ======================================================
-    # Utilities
-    # ======================================================
-    def _safe_str(self, x) -> str:
-        if x is None:
-            return ""
-        try:
-            if pd.isna(x):
-                return ""
-        except Exception:
-            pass
-        return str(x).strip()
+        return True
 
-    # ======================================================
-    # Compatibility checks
-    # ======================================================
-    def _cpu_mb_ok(self, cpu, mb) -> bool:
-        if cpu is None or mb is None:
-            return True
-        return self._safe_str(cpu.get("Socket")) == self._safe_str(mb.get("Socket")) \
-            if cpu.get("Socket") and mb.get("Socket") else True
+    # -------------------------
+    # Top-K + 價格感知選擇
+    # -------------------------
+    def _pick_one(self, df, budget, total_budget):
+        df = df[df["abs_price"] <= budget]
+        if df.empty:
+            return None
 
-    def _ram_mb_ok(self, ram, mb) -> bool:
-        if ram is None or mb is None:
-            return True
-        return self._safe_str(ram.get("DDR_Type")) == self._safe_str(mb.get("DDR_Type")) \
-            if ram.get("DDR_Type") and mb.get("DDR_Type") else True
+        df = df.sort_values("總分", ascending=False).head(TOP_K)
 
-    def _psu_vga_ok(self, psu, vga) -> bool:
-        if psu is None or vga is None:
-            return True
-        try:
-            return float(psu.get("Watt", 0)) >= float(vga.get("TDP", 0)) * 1.3
-        except Exception:
-            return True
+        score = df["總分"].astype(float)
+        price = df["abs_price"].astype(float)
 
-    def _vga_case_ok(self, vga, case) -> bool:
-        if vga is None or case is None:
-            return True
-        try:
-            return float(case.get("GPU_Max_Length_分數", 0)) >= float(vga.get("Length_分數", 0))
-        except Exception:
-            return True
+        alpha = 0.3 * (budget / max(total_budget, 1))
+        final = score - alpha * (price / price.max())
+        final = final.clip(lower=0.0001)
 
-    # ======================================================
-    # Main optimizer (Top-K stochastic)
-    # ======================================================
-    def optimize_build(
-        self, total_budget: int, prefs: dict
-    ) -> tuple[dict[str, pd.Series], float]:
+        return df.sample(1, weights=final).iloc[0]
 
-        # ---------- weights ----------
+    # -------------------------
+    # 主流程
+    # -------------------------
+    def optimize_build(self, total_budget: int, prefs: dict):
+        specified_brands = prefs.get("specified_brands", {})
+        purpose = prefs.get("purpose")
+
         weights = {
-            "CPU": 0.22, "VGA": 0.30, "MB": 0.12, "RAM": 0.10,
-            "SSD": 0.08, "HDD": 0.04, "PSU": 0.08,
-            "CHASSIS": 0.04, "COOLER": 0.04, "FAN": 0.02,
+            "CPU": 0.25,
+            "VGA": 0.30,
+            "MB": 0.15,
+            "RAM": 0.10,
+            "SSD": 0.10,
+            "HDD": 0.05,
+            "PSU": 0.05,
+            "CHASSIS": 0.05,
+            "FAN": 0.02,
         }
 
-        purpose = prefs.get("purpose")
         if purpose == "programming":
-            weights.update({"CPU": 0.30, "RAM": 0.18, "VGA": 0.15})
+            weights.update({"CPU": 0.35, "VGA": 0.15})
         elif purpose == "video_editing":
-            weights.update({"CPU": 0.28, "RAM": 0.16, "SSD": 0.14})
-        elif purpose == "word_processing":
-            weights.update({"CPU": 0.25, "VGA": 0.10})
+            weights.update({"CPU": 0.30, "RAM": 0.15, "SSD": 0.15})
 
-        # normalize weights
-        s = sum(weights.values())
-        weights = {k: v / s for k, v in weights.items()}
+        cooling = prefs.get("cooling", "heat")
+        cooler_key = "WATER" if cooling == "water" else "HEAT"
+        weights[cooler_key] = 0.05
 
-        spec_brands = prefs.get("specified_brands", {})
+        order = ["CPU", "VGA", "MB", "RAM", "SSD", "HDD", "PSU", "CHASSIS", cooler_key, "FAN"]
 
-        build: dict[str, pd.Series] = {}
+        build = {}
         spent = 0.0
-
-        order = [
-            "CPU", "MB", "RAM", "VGA",
-            "SSD", "HDD", "PSU",
-            "CHASSIS", "COOLER", "FAN",
-        ]
-
-        TOP_K = 3  # ⭐ 核心參數：可以改 3 / 5
 
         for part in order:
             if part not in self.data:
@@ -133,47 +102,24 @@ class PCBuilderAI:
 
             df = self.data[part].copy()
 
-            # ---------- STRICT brand ----------
-            brand = spec_brands.get(part)
+       
+            brand = specified_brands.get(part)
             if brand and "BRAND" in df.columns:
                 df = df[df["BRAND"].astype(str).str.contains(brand, case=False, na=False)]
                 if df.empty:
-                    return {}, 0.0
+                    continue   
 
-            # ---------- budget ----------
+        
+            df = df[df.apply(lambda r: self._compatible(build, part, r), axis=1)]
+
             remaining = total_budget - spent
-            part_budget = total_budget * weights.get(part, 0.05)
-            limit = min(part_budget, remaining)
+            part_budget = remaining * weights.get(part, 0.1)
 
-            df = df[df["abs_price"] <= limit]
-            if df.empty:
-                return {}, 0.0
-
-            # ---------- compatibility ----------
-            if part == "MB" and "CPU" in build:
-                df = df[df.apply(lambda r: self._cpu_mb_ok(build["CPU"], r), axis=1)]
-            if part == "RAM" and "MB" in build:
-                df = df[df.apply(lambda r: self._ram_mb_ok(r, build["MB"]), axis=1)]
-            if part == "PSU" and "VGA" in build:
-                df = df[df.apply(lambda r: self._psu_vga_ok(r, build["VGA"]), axis=1)]
-            if part == "CHASSIS" and "VGA" in build:
-                df = df[df.apply(lambda r: self._vga_case_ok(build["VGA"], r), axis=1)]
-
-            if df.empty:
-                return {}, 0.0
-
-            # ==================================================
-            # ⭐ Top-K stochastic selection
-            # ==================================================
-            topk = df.sort_values("總分", ascending=False).head(TOP_K)
-
-            scores = topk["總分"].astype(float)
-            probs = scores / scores.sum()   # 分數越高，機率越高
-
-            choice = topk.sample(1, weights=probs).iloc[0]
-
+            choice = self._pick_one(df, part_budget, total_budget)
+            if choice is None:
+                continue
 
             build[part] = choice
-            spent += float(choice.get("abs_price", 0))
+            spent += float(choice["abs_price"])
 
         return build, spent
