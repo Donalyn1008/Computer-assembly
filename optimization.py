@@ -6,6 +6,7 @@ import numpy as np
 class PCBuilderAI:
     def __init__(self, file_map: dict[str, str]):
         """
+        統一零件 key：
         CPU / MB / RAM / VGA / SSD / HDD / PSU / CHASSIS / FAN / COOLER
         """
         self.data: dict[str, pd.DataFrame] = {}
@@ -29,27 +30,19 @@ class PCBuilderAI:
                 elif "Price" in df.columns:
                     df["abs_price"] = pd.to_numeric(df["Price"], errors="coerce").abs()
                 else:
-                    df["abs_price"] = np.inf 
+                    df["abs_price"] = np.inf  # 避免價格缺失亂選
 
+                # ---------- score ----------
                 if "總分" not in df.columns:
                     numeric_cols = df.select_dtypes(include=[np.number]).columns
-                    if len(numeric_cols) > 0:
-                        df["總分"] = df[numeric_cols].mean(axis=1)
-                    else:
-                        df["總分"] = 0.0
+                    df["總分"] = df[numeric_cols].mean(axis=1) if len(numeric_cols) else 0.0
 
-            
-                if key in {"HEAT", "WATER"}:
-                    store_key = "COOLER"
-                else:
-                    store_key = key
-
-                if store_key in self.data:
-                    self.data[store_key] = pd.concat(
-                        [self.data[store_key], df], ignore_index=True
-                    )
-                else:
-                    self.data[store_key] = df
+                # ---------- key mapping (HEAT/WATER → COOLER) ----------
+                store_key = "COOLER" if key in {"HEAT", "WATER"} else key
+                self.data.setdefault(store_key, pd.DataFrame())
+                self.data[store_key] = pd.concat(
+                    [self.data[store_key], df], ignore_index=True
+                )
 
             except Exception as e:
                 print(f"[WARN] Failed loading {key}: {e}")
@@ -68,68 +61,51 @@ class PCBuilderAI:
         return str(x).strip()
 
     # ======================================================
-    # Compatibility Checks
+    # Compatibility checks
     # ======================================================
-    def _cpu_mb_compatible(self, cpu, mb) -> bool:
+    def _cpu_mb_ok(self, cpu, mb) -> bool:
         if cpu is None or mb is None:
             return True
-        cpu_socket = self._safe_str(cpu.get("Socket"))
-        mb_socket = self._safe_str(mb.get("Socket"))
-        if cpu_socket and mb_socket:
-            return cpu_socket == mb_socket
-        return True
+        return self._safe_str(cpu.get("Socket")) == self._safe_str(mb.get("Socket")) \
+            if cpu.get("Socket") and mb.get("Socket") else True
 
-    def _ram_mb_compatible(self, ram, mb) -> bool:
+    def _ram_mb_ok(self, ram, mb) -> bool:
         if ram is None or mb is None:
             return True
-        ram_type = self._safe_str(ram.get("DDR_Type"))
-        mb_type = self._safe_str(mb.get("DDR_Type"))
-        if ram_type and mb_type:
-            return ram_type == mb_type
-        return True
+        return self._safe_str(ram.get("DDR_Type")) == self._safe_str(mb.get("DDR_Type")) \
+            if ram.get("DDR_Type") and mb.get("DDR_Type") else True
 
-    def _psu_vga_compatible(self, psu, vga) -> bool:
+    def _psu_vga_ok(self, psu, vga) -> bool:
         if psu is None or vga is None:
             return True
-        psu_watt = psu.get("Watt", 0)
-        vga_watt = vga.get("TDP", 0)
         try:
-            return float(psu_watt) >= float(vga_watt) * 1.3
+            return float(psu.get("Watt", 0)) >= float(vga.get("TDP", 0)) * 1.3
         except Exception:
             return True
 
-    def _vga_case_compatible(self, vga, case) -> bool:
+    def _vga_case_ok(self, vga, case) -> bool:
         if vga is None or case is None:
             return True
-        vga_len = vga.get("Length_分數", 0)
-        case_len = case.get("GPU_Max_Length_分數", 0)
         try:
-            return float(case_len) >= float(vga_len)
+            return float(case.get("GPU_Max_Length_分數", 0)) >= float(vga.get("Length_分數", 0))
         except Exception:
             return True
 
     # ======================================================
-    # Main Optimizer
+    # Main optimizer (STRICT BRAND)
     # ======================================================
     def optimize_build(
         self, total_budget: int, prefs: dict
     ) -> tuple[dict[str, pd.Series], float]:
 
-        # ---------- base weights ----------
+        # ---------- weights ----------
         weights = {
-            "CPU": 0.22,
-            "VGA": 0.30,
-            "MB": 0.12,
-            "RAM": 0.10,
-            "SSD": 0.08,
-            "HDD": 0.04,
-            "PSU": 0.08,
-            "CHASSIS": 0.04,
-            "FAN": 0.02,
-            "COOLER": 0.04,
+            "CPU": 0.22, "VGA": 0.30, "MB": 0.12, "RAM": 0.10,
+            "SSD": 0.08, "HDD": 0.04, "PSU": 0.08,
+            "CHASSIS": 0.04, "COOLER": 0.04, "FAN": 0.02,
         }
 
-        # ---------- purpose adjust ----------
+        # ---------- purpose ----------
         purpose = prefs.get("purpose")
         if purpose == "programming":
             weights.update({"CPU": 0.30, "RAM": 0.18, "VGA": 0.15})
@@ -142,7 +118,7 @@ class PCBuilderAI:
         s = sum(weights.values())
         weights = {k: v / s for k, v in weights.items()}
 
-        spec_brands = prefs.get("specified_brands", {})
+        spec_brands: dict[str, str] = prefs.get("specified_brands", {})
 
         build: dict[str, pd.Series] = {}
         spent = 0.0
@@ -150,7 +126,7 @@ class PCBuilderAI:
         order = [
             "CPU", "MB", "RAM", "VGA",
             "SSD", "HDD", "PSU",
-            "CHASSIS", "COOLER", "FAN"
+            "CHASSIS", "COOLER", "FAN",
         ]
 
         for part in order:
@@ -159,12 +135,15 @@ class PCBuilderAI:
 
             df = self.data[part].copy()
 
-            # ---------- brand filter ----------
+            # ==================================================
+            # 🔴 STRICT BRAND CONSTRAINT
+            # ==================================================
             brand = spec_brands.get(part)
             if brand and "BRAND" in df.columns:
                 df = df[df["BRAND"].astype(str).str.contains(brand, case=False, na=False)]
                 if df.empty:
-                    df = self.data[part].copy()
+                    # ❌ 找不到指定品牌 → 直接放棄整個 build
+                    return {}, 0.0
 
             # ---------- budget ----------
             remaining = total_budget - spent
@@ -173,21 +152,22 @@ class PCBuilderAI:
 
             df = df[df["abs_price"] <= limit]
             if df.empty:
-                df = self.data[part].copy()
+                return {}, 0.0
 
             # ---------- compatibility ----------
             if part == "MB" and "CPU" in build:
-                df = df[df.apply(lambda r: self._cpu_mb_compatible(build["CPU"], r), axis=1)]
+                df = df[df.apply(lambda r: self._cpu_mb_ok(build["CPU"], r), axis=1)]
             if part == "RAM" and "MB" in build:
-                df = df[df.apply(lambda r: self._ram_mb_compatible(r, build["MB"]), axis=1)]
+                df = df[df.apply(lambda r: self._ram_mb_ok(r, build["MB"]), axis=1)]
             if part == "PSU" and "VGA" in build:
-                df = df[df.apply(lambda r: self._psu_vga_compatible(r, build["VGA"]), axis=1)]
+                df = df[df.apply(lambda r: self._psu_vga_ok(r, build["VGA"]), axis=1)]
             if part == "CHASSIS" and "VGA" in build:
-                df = df[df.apply(lambda r: self._vga_case_compatible(build["VGA"], r), axis=1)]
+                df = df[df.apply(lambda r: self._vga_case_ok(build["VGA"], r), axis=1)]
 
             if df.empty:
-                continue
+                return {}, 0.0
 
+            # ---------- select ----------
             choice = df.sort_values("總分", ascending=False).iloc[0]
             build[part] = choice
             spent += float(choice.get("abs_price", 0))
