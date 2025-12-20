@@ -218,7 +218,7 @@ if st.button("Generate Result", type="primary"):
             spec_brand_map[s["part"]] = s["brand"]
 
     prefs = {
-        "specified_brands": spec_brand_map, # 傳遞給 AI
+        "specified_brands": spec_brand_map, 
         "cooling": "heat",
         "purpose": purpose_val,
     }
@@ -237,7 +237,7 @@ if st.button("Generate Result", type="primary"):
             
             st.subheader("推薦配置清單")
             st.dataframe(df[["part", "brand", "model", "detail", "price"]], use_container_width=True)
-            st.success(f"### 總預算估計: **{int(total_price):,} NTD**")
+            st.success(f"### Total Price: **{int(total_price):,} NTD**")
             
     except Exception as e:
         st.error(f"執行出錯: {e}")
