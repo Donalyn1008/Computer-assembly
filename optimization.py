@@ -3,12 +3,11 @@ import pandas as pd
 import numpy as np
 import random
 
-TOP_K = 3   
+TOP_K = 3  # Top-K 高分零件數量
 
 class PCBuilderAI:
     def __init__(self, file_map: dict[str, str]):
         self.data: dict[str, pd.DataFrame] = {}
-
         for key, path in file_map.items():
             df = pd.read_csv(path)
             df.columns = (
@@ -17,6 +16,7 @@ class PCBuilderAI:
                 .str.strip()
             )
 
+            # 建立 abs_price 欄位
             if "price_分數" in df.columns:
                 df["abs_price"] = df["price_分數"].abs()
             elif "Price" in df.columns:
@@ -33,34 +33,34 @@ class PCBuilderAI:
         if part == "MB" and "CPU" in build:
             if "Socket" in row and "Socket" in build["CPU"]:
                 return row["Socket"] == build["CPU"]["Socket"]
-
         if part == "RAM" and "MB" in build:
             if "RAM_Type" in row and "RAM_Type" in build["MB"]:
                 return row["RAM_Type"] == build["MB"]["RAM_Type"]
-
         if part == "CHASSIS" and "VGA" in build:
             if "GPU_Max_Length" in row and "Length" in build["VGA"]:
                 return row["GPU_Max_Length"] >= build["VGA"]["Length"]
-
         return True
 
     # -------------------------
     # Top-K + 價格感知選擇
     # -------------------------
-    def _pick_one(self, df, budget, total_budget):
+    def _pick_one(self, df, budget, total_budget, fixed_brand=False):
         df = df[df["abs_price"] <= budget]
         if df.empty:
             return None
 
         df = df.sort_values("總分", ascending=False).head(TOP_K)
 
+        if fixed_brand:
+            # 指定品牌 → 直接拿總分最高的零件，結果固定
+            return df.iloc[0]
+
+        # 未指定品牌 → Top-K 隨機選擇，價格加權
         score = df["總分"].astype(float)
         price = df["abs_price"].astype(float)
-
         alpha = 0.3 * (budget / max(total_budget, 1))
         final = score - alpha * (price / price.max())
         final = final.clip(lower=0.0001)
-
         return df.sample(1, weights=final).iloc[0]
 
     # -------------------------
@@ -87,10 +87,12 @@ class PCBuilderAI:
         elif purpose == "video_editing":
             weights.update({"CPU": 0.30, "RAM": 0.15, "SSD": 0.15})
 
+        # cooling 對應 HEAT / WATER
         cooling = prefs.get("cooling", "heat")
-        cooler_key = "WATER" if cooling == "water" else "HEAT"
+        cooler_key = "WATER" if cooling.lower() == "water" else "HEAT"
         weights[cooler_key] = 0.05
 
+        # 建議順序
         order = ["CPU", "VGA", "MB", "RAM", "SSD", "HDD", "PSU", "CHASSIS", cooler_key, "FAN"]
 
         build = {}
@@ -102,20 +104,23 @@ class PCBuilderAI:
 
             df = self.data[part].copy()
 
-       
+            # 指定品牌（硬限制）
             brand = specified_brands.get(part)
+            fixed_brand = False
             if brand and "BRAND" in df.columns:
-                df = df[df["BRAND"].astype(str).str.contains(brand, case=False, na=False)]
+                mask = df["BRAND"].astype(str).str.contains(brand, case=False, na=False)
+                df = df[mask]
                 if df.empty:
-                    continue   
+                    continue
+                fixed_brand = True  # 標記此零件使用固定選擇
 
-        
+            # 相容性
             df = df[df.apply(lambda r: self._compatible(build, part, r), axis=1)]
 
             remaining = total_budget - spent
             part_budget = remaining * weights.get(part, 0.1)
 
-            choice = self._pick_one(df, part_budget, total_budget)
+            choice = self._pick_one(df, part_budget, total_budget, fixed_brand=fixed_brand)
             if choice is None:
                 continue
 
