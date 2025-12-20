@@ -166,7 +166,12 @@ class PCBuilderAI:
             # ⭐ Top-K stochastic selection
             # ==================================================
             topk = df.sort_values("總分", ascending=False).head(TOP_K)
-            choice = topk.sample(1).iloc[0]
+
+            scores = topk["總分"].astype(float)
+            probs = scores / scores.sum()   # 分數越高，機率越高
+
+            choice = topk.sample(1, weights=probs).iloc[0]
+
 
             build[part] = choice
             spent += float(choice.get("abs_price", 0))
