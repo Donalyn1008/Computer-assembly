@@ -205,34 +205,39 @@ for i, row in enumerate(st.session_state.exclude_rows):
         st.button("Remove", key=f"rm_ex_{i}", on_click=remove_ex, args=(i,))
 
 # =========================
-# Run Optimizer
+# Run Optimizer 
 # =========================
 specified = [{"part": r["part"], "brand": r["brand"]} for r in st.session_state.spec_rows if r["part"]]
 excludes = [r["part"] for r in st.session_state.exclude_rows if r["part"]]
 
 if st.button("Generate Result", type="primary"):
-    cpu_brand = None
+ 
+    spec_brand_map = {}
     for s in specified:
-        if s["part"] == "CPU" and s["brand"]:
-            cpu_brand = s["brand"]
+        spec_brand_map[s["part"]] = s["brand"]
 
     prefs = {
-        "cpu_brand": cpu_brand or "",
+        "cpu_brand": spec_brand_map.get("CPU", ""), 
+        "specified_brands": spec_brand_map,         
         "cooling": "heat",
-        "purpose": purpose_val,  # ⬅️ 關鍵：用途有進 prefs
+        "purpose": purpose_val,
     }
 
     ai = get_ai()
-    build, _ = ai.optimize_build(budget_val, prefs)
-    items = build_items(build, excludes)
+    try:
+        build, total_price = ai.optimize_build(budget_val, prefs)
+        items = build_items(build, excludes)
 
-    if not items:
-        st.warning("No results (everything excluded).")
-    else:
-        df = pd.DataFrame(items)
-        df["part"] = df["part"].map(COMP_LABEL)
-        df = df[["part", "brand", "model", "detail", "price"]]
-
-        st.subheader("Output")
-        st.dataframe(df, use_container_width=True)
-        st.markdown(f"### Total Price: **{df['price'].sum():,} NTD**")
+        if not items:
+            st.warning("No results found (check your budget or filters).")
+        else:
+            df = pd.DataFrame(items)
+   
+            df["part"] = df["part"].map(lambda x: COMP_LABEL.get(x, x))
+            
+            st.subheader("Output")
+            st.dataframe(df[["part", "brand", "model", "detail", "price"]], use_container_width=True)
+            st.success(f"### Total Price: **{int(total_price):,} NTD**")
+            
+    except Exception as e:
+        st.error(f"Error during optimization: {e}")
