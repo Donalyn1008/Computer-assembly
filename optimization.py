@@ -1,14 +1,11 @@
 from __future__ import annotations
 import pandas as pd
 import numpy as np
+import random
 
 
 class PCBuilderAI:
     def __init__(self, file_map: dict[str, str]):
-        """
-        統一零件 key：
-        CPU / MB / RAM / VGA / SSD / HDD / PSU / CHASSIS / FAN / COOLER
-        """
         self.data: dict[str, pd.DataFrame] = {}
 
         for key, path in file_map.items():
@@ -30,14 +27,14 @@ class PCBuilderAI:
                 elif "Price" in df.columns:
                     df["abs_price"] = pd.to_numeric(df["Price"], errors="coerce").abs()
                 else:
-                    df["abs_price"] = np.inf  # 避免價格缺失亂選
+                    df["abs_price"] = np.inf
 
                 # ---------- score ----------
                 if "總分" not in df.columns:
-                    numeric_cols = df.select_dtypes(include=[np.number]).columns
-                    df["總分"] = df[numeric_cols].mean(axis=1) if len(numeric_cols) else 0.0
+                    num_cols = df.select_dtypes(include=[np.number]).columns
+                    df["總分"] = df[num_cols].mean(axis=1) if len(num_cols) else 0.0
 
-                # ---------- key mapping (HEAT/WATER → COOLER) ----------
+                # ---------- key mapping ----------
                 store_key = "COOLER" if key in {"HEAT", "WATER"} else key
                 self.data.setdefault(store_key, pd.DataFrame())
                 self.data[store_key] = pd.concat(
@@ -92,7 +89,7 @@ class PCBuilderAI:
             return True
 
     # ======================================================
-    # Main optimizer (STRICT BRAND)
+    # Main optimizer (Top-K stochastic)
     # ======================================================
     def optimize_build(
         self, total_budget: int, prefs: dict
@@ -105,7 +102,6 @@ class PCBuilderAI:
             "CHASSIS": 0.04, "COOLER": 0.04, "FAN": 0.02,
         }
 
-        # ---------- purpose ----------
         purpose = prefs.get("purpose")
         if purpose == "programming":
             weights.update({"CPU": 0.30, "RAM": 0.18, "VGA": 0.15})
@@ -118,7 +114,7 @@ class PCBuilderAI:
         s = sum(weights.values())
         weights = {k: v / s for k, v in weights.items()}
 
-        spec_brands: dict[str, str] = prefs.get("specified_brands", {})
+        spec_brands = prefs.get("specified_brands", {})
 
         build: dict[str, pd.Series] = {}
         spent = 0.0
@@ -129,20 +125,19 @@ class PCBuilderAI:
             "CHASSIS", "COOLER", "FAN",
         ]
 
+        TOP_K = 3  # ⭐ 核心參數：可以改 3 / 5
+
         for part in order:
             if part not in self.data:
                 continue
 
             df = self.data[part].copy()
 
-            # ==================================================
-            # 🔴 STRICT BRAND CONSTRAINT
-            # ==================================================
+            # ---------- STRICT brand ----------
             brand = spec_brands.get(part)
             if brand and "BRAND" in df.columns:
                 df = df[df["BRAND"].astype(str).str.contains(brand, case=False, na=False)]
                 if df.empty:
-                    # ❌ 找不到指定品牌 → 直接放棄整個 build
                     return {}, 0.0
 
             # ---------- budget ----------
@@ -167,8 +162,12 @@ class PCBuilderAI:
             if df.empty:
                 return {}, 0.0
 
-            # ---------- select ----------
-            choice = df.sort_values("總分", ascending=False).iloc[0]
+            # ==================================================
+            # ⭐ Top-K stochastic selection
+            # ==================================================
+            topk = df.sort_values("總分", ascending=False).head(TOP_K)
+            choice = topk.sample(1).iloc[0]
+
             build[part] = choice
             spent += float(choice.get("abs_price", 0))
 
