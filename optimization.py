@@ -1,130 +1,87 @@
-from __future__ import annotations
 import pandas as pd
 import numpy as np
-import random
-
-TOP_K = 3  # Top-K 高分零件數量
 
 class PCBuilderAI:
-    def __init__(self, file_map: dict[str, str]):
-        self.data: dict[str, pd.DataFrame] = {}
+    def __init__(self, file_map):
+        self.data = {}
         for key, path in file_map.items():
-            df = pd.read_csv(path)
-            df.columns = (
-                df.columns.astype(str)
-                .str.replace("\u3000", " ", regex=False)
-                .str.strip()
-            )
+            try:
+                self.data[key] = pd.read_csv(path)
+                # 統一將價格分數轉為正數處理（您的資料中部分價格為負值）
+                if 'price_分數' in self.data[key].columns:
+                    self.data[key]['abs_price'] = self.data[key]['price_分數'].abs()
+                elif 'Price_分數' in self.data[key].columns:
+                    self.data[key]['abs_price'] = self.data[key]['Price_分數'].abs()
+            except Exception as e:
+                print(f"警告：無法讀取 {key}, 錯誤: {e}")
 
-            # 建立 abs_price 欄位
-            if "price_分數" in df.columns:
-                df["abs_price"] = df["price_分數"].abs()
-            elif "Price" in df.columns:
-                df["abs_price"] = pd.to_numeric(df["Price"], errors="coerce").fillna(0)
-            else:
-                df["abs_price"] = 0
-
-            self.data[key] = df
-
-    # -------------------------
-    # 相容性檢查
-    # -------------------------
-    def _compatible(self, build, part, row) -> bool:
-        if part == "MB" and "CPU" in build:
-            if "Socket" in row and "Socket" in build["CPU"]:
-                return row["Socket"] == build["CPU"]["Socket"]
-        if part == "RAM" and "MB" in build:
-            if "RAM_Type" in row and "RAM_Type" in build["MB"]:
-                return row["RAM_Type"] == build["MB"]["RAM_Type"]
-        if part == "CHASSIS" and "VGA" in build:
-            if "GPU_Max_Length" in row and "Length" in build["VGA"]:
-                return row["GPU_Max_Length"] >= build["VGA"]["Length"]
-        return True
-
-    # -------------------------
-    # Top-K + 價格感知選擇
-    # -------------------------
-    def _pick_one(self, df, budget, total_budget, fixed_brand=False):
-        df = df[df["abs_price"] <= budget]
-        if df.empty:
-            return None
-
-        df = df.sort_values("總分", ascending=False).head(TOP_K)
-
-        if fixed_brand:
-            # 指定品牌 → 直接拿總分最高的零件，結果固定
-            return df.iloc[0]
-
-        # 未指定品牌 → Top-K 隨機選擇，價格加權
-        score = df["總分"].astype(float)
-        price = df["abs_price"].astype(float)
-        alpha = 0.3 * (budget / max(total_budget, 1))
-        final = score - alpha * (price / price.max())
-        final = final.clip(lower=0.0001)
-        return df.sample(1, weights=final).iloc[0]
-
-    # -------------------------
-    # 主流程
-    # -------------------------
-    def optimize_build(self, total_budget: int, prefs: dict):
-        specified_brands = prefs.get("specified_brands", {})
-        purpose = prefs.get("purpose")
-
+    def optimize_build(self, total_budget, prefs):
+        """
+        total_budget: 總預算 (例如 50000)
+        prefs: {'color': 'white', 'cpu_brand': 'Intel', 'cooling': 'water'}
+        """
+  
         weights = {
-            "CPU": 0.25,
-            "VGA": 0.30,
-            "MB": 0.15,
-            "RAM": 0.10,
-            "SSD": 0.10,
-            "HDD": 0.05,
-            "PSU": 0.05,
-            "CHASSIS": 0.05,
-            "FAN": 0.02,
+            'VGA': 0.35, 'CPU': 0.20, 'MB': 0.12, 'RAM': 0.08,
+            'SSD': 0.07, 'PSU': 0.07, 'CHASSIS': 0.06, 'FAN': 0.02, 'HDD': 0.03
         }
-
-        if purpose == "programming":
-            weights.update({"CPU": 0.35, "VGA": 0.15})
-        elif purpose == "video_editing":
-            weights.update({"CPU": 0.30, "RAM": 0.15, "SSD": 0.15})
-
-        # cooling 對應 HEAT / WATER
-        cooling = prefs.get("cooling", "heat")
-        cooler_key = "WATER" if cooling.lower() == "water" else "HEAT"
-        weights[cooler_key] = 0.05
-
-        # 建議順序
-        order = ["CPU", "VGA", "MB", "RAM", "SSD", "HDD", "PSU", "CHASSIS", cooler_key, "FAN"]
-
+        
+     
+        cooling_type = 'WATER' if prefs.get('cooling') == 'water' else 'HEAT'
+        weights[cooling_type] = 0.05
+        
         build = {}
-        spent = 0.0
-
-        for part in order:
-            if part not in self.data:
-                continue
-
+        current_spent = 0
+        
+        # --- 核心零件挑選 (CPU & VGA) ---
+        for part in ['CPU', 'VGA']:
             df = self.data[part].copy()
+            
+            if part == 'CPU' and 'cpu_brand' in prefs:
+                df = df[df['BRAND'].str.contains(prefs['cpu_brand'], case=False)]
+            
+            
+            part_limit = total_budget * weights[part]
+            affordable = df[df['abs_price'] <= part_limit]
+            
+           
+            target = affordable if not affordable.empty else df
+            build[part] = target.sort_values('總分', ascending=False).iloc[0]
+            current_spent += build[part]['abs_price']
 
-            # 指定品牌（硬限制）
-            brand = specified_brands.get(part)
-            fixed_brand = False
-            if brand and "BRAND" in df.columns:
-                mask = df["BRAND"].astype(str).str.contains(brand, case=False, na=False)
-                df = df[mask]
-                if df.empty:
-                    continue
-                fixed_brand = True  # 標記此零件使用固定選擇
+        # --- 相容性連鎖過濾 ---
+        
+        vga_length_score = build['VGA'].get('Length_分數', 0)
+        chassis_pool = self.data['CHASSIS'].copy()
+      
+        chassis_pool = chassis_pool[chassis_pool['GPU_Max_Length_分數'] >= vga_length_score]
+        
+        if prefs.get('color') == 'white':
+            chassis_pool = chassis_pool[chassis_pool['white_分數'] > 0]
 
-            # 相容性
-            df = df[df.apply(lambda r: self._compatible(build, part, r), axis=1)]
-
-            remaining = total_budget - spent
-            part_budget = remaining * weights.get(part, 0.1)
-
-            choice = self._pick_one(df, part_budget, total_budget, fixed_brand=fixed_brand)
-            if choice is None:
-                continue
-
+      
+        remaining_parts = ['MB', 'RAM', 'SSD', 'HDD', 'PSU', 'CHASSIS', 'FAN', cooling_type]
+        
+        for part in remaining_parts:
+            if part not in self.data: continue
+            
+            df = self.data[part].copy()
+            
+           
+            if prefs.get('color') == 'white' and 'white_分數' in df.columns:
+                df = df[df['white_分數'] > 0]
+            
+           
+            remaining_budget = total_budget - current_spent
+           
+            limit = max(remaining_budget * 0.15, 1000) 
+            
+            affordable = df[df['abs_price'] <= limit]
+            target = affordable if not affordable.empty else df.sort_values('abs_price')
+            
+          
+            choice = target.sort_values('總分', ascending=False).iloc[0]
             build[part] = choice
-            spent += float(choice["abs_price"])
+            current_spent += choice['abs_price']
 
-        return build, spent
+        return build, current_spent
