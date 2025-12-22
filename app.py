@@ -4,7 +4,7 @@ from typing import Any, Dict, List, Optional
 import pandas as pd
 import streamlit as st
 
-from optimization import PCBuilderAI  # type: ignore
+from nsga2 import NSGAPCBuilder  # type: ignore
 
 # =========================
 # CSV files (repo /data)
@@ -83,8 +83,9 @@ def pick_detail(row: Any) -> str:
 
 
 @st.cache_resource
-def get_ai() -> PCBuilderAI:
-    return PCBuilderAI(FILES)
+def get_ai() -> NSGAPCBuilder:
+    return NSGAPCBuilder(FILES)
+
 
 
 def optimizer_key_to_ui(k: str) -> str:
