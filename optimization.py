@@ -94,21 +94,130 @@ class NSGAPCBuilder:
 
     # -------- 偏好與資料前處理 --------
     def _filter_df_by_prefs(self, part: str, df: pd.DataFrame, prefs: Dict[str, Any]) -> pd.DataFrame:
-        df_filtered = df.copy()
-        specified_brands = prefs.get("specified_brands", {})
+        """Filter (and softly weight) a part dataframe by user preferences.
+
+        Supports:
+        - specified_brands[part]: substring match on BRAND (case-insensitive)
+        - prefs['color']: None / 'black' / 'white'
+          * prefer using '<color>_分數' column if present (e.g., black_分數 / white_分數)
+          * fallback to keyword match in a detail/spec column
+        - prefs['rgb']: None / True / False
+          * prefer using 'RGB_分數' column if present
+          * fallback to keyword match in a detail/spec column (RGB/ARGB/AURA/...)
+        The function also adds a small '__pref_bonus' column for preference matching.
+        """
+
+        df_base = df.copy()
+        df_filtered = df_base.copy()
+
+        def _find_detail_col(frame: pd.DataFrame) -> Optional[str]:
+            candidates = ["DETAIL", "Detail", "detail", "SPEC", "Spec", "spec", "規格", "描述", "細節", "說明"]
+            cols_lower = {str(c).lower(): c for c in frame.columns}
+            for c in candidates:
+                key = str(c).lower()
+                if key in cols_lower:
+                    return cols_lower[key]
+            return None
+
+        def _contains_any(series: pd.Series, keywords: List[str]) -> pd.Series:
+            # safe string contains over NaN
+            s = series.astype(str)
+            mask = pd.Series(False, index=series.index)
+            for kw in keywords:
+                if not kw:
+                    continue
+                mask = mask | s.str.contains(kw, case=False, na=False)
+            return mask
+
+        # -------- Brand preference --------
+        specified_brands = prefs.get("specified_brands", {}) or {}
         if part in specified_brands and specified_brands[part]:
-            brand = specified_brands[part]
-            df_filtered = df_filtered[df_filtered.get("BRAND", "").astype(str).str.contains(brand, case=False, na=False)]
-            if df_filtered.empty:
-                df_filtered = df.copy()
+            brand = str(specified_brands[part]).strip()
+            if brand:
+                df_filtered = df_filtered[df_filtered.get("BRAND", "").astype(str).str.contains(brand, case=False, na=False)]
+                if df_filtered.empty:
+                    df_filtered = df_base.copy()
 
-        # 顏色偏好（白色）
-        if prefs.get("color") == "white" and "white_分數" in df_filtered.columns:
-            df_filtered = df_filtered[df_filtered["white_分數"] > 0]
-            if df_filtered.empty:
-                df_filtered = df.copy()
+        # init bonus column
+        if "__pref_bonus" not in df_filtered.columns:
+            df_filtered["__pref_bonus"] = 0.0
+        else:
+            df_filtered["__pref_bonus"] = pd.to_numeric(df_filtered["__pref_bonus"], errors="coerce").fillna(0.0)
+
+        detail_col = _find_detail_col(df_filtered)
+
+        # -------- Color preference (black/white) --------
+        color = prefs.get("color")
+        if color in {"black", "white"}:
+            score_col = f"{color}_分數"
+            color_mask = None
+
+            if score_col in df_filtered.columns:
+                colv = pd.to_numeric(df_filtered[score_col], errors="coerce").fillna(0.0)
+                color_mask = colv > 0
+            elif detail_col is not None:
+                if color == "white":
+                    color_mask = _contains_any(df_filtered[detail_col], ["white", "白色", "白"])
+                else:
+                    color_mask = _contains_any(df_filtered[detail_col], ["black", "黑色", "黑"])
+
+            # If we can identify matches, filter; if filtering empties the DF, keep original.
+            if color_mask is not None:
+                df_try = df_filtered[color_mask].copy()
+                if not df_try.empty:
+                    df_filtered = df_try
+
+                # add small bonus for matched items (even if we didn't filter due to empty)
+                # scale: small compared to '總分' (usually 0~1000); adjust if needed
+                df_filtered["__pref_bonus"] = pd.to_numeric(df_filtered["__pref_bonus"], errors="coerce").fillna(0.0)
+                if score_col in df_filtered.columns:
+                    colv = pd.to_numeric(df_filtered[score_col], errors="coerce").fillna(0.0)
+                    df_filtered["__pref_bonus"] += (colv > 0).astype(float) * 30.0
+                elif detail_col is not None:
+                    if color == "white":
+                        m = _contains_any(df_filtered[detail_col], ["white", "白色", "白"])
+                    else:
+                        m = _contains_any(df_filtered[detail_col], ["black", "黑色", "黑"])
+                    df_filtered["__pref_bonus"] += m.astype(float) * 30.0
+
+        # -------- RGB preference --------
+        rgb_pref = prefs.get("rgb", None)
+        if isinstance(rgb_pref, bool):
+            rgb_mask = None
+            if "RGB_分數" in df_filtered.columns:
+                colv = pd.to_numeric(df_filtered["RGB_分數"], errors="coerce").fillna(0.0)
+                rgb_mask = (colv > 0) if rgb_pref else (colv <= 0)
+            elif detail_col is not None:
+                rgb_keywords = [
+                    "RGB", "ARGB", "A-RGB", "Addressable", "AURA", "Mystic", "iCUE",
+                    "Chroma", "Polychrome", "Fusion", "Light", "Lighting", "LED",
+                    "燈效", "燈光", "RGB燈", "發光", "炫彩"
+                ]
+                has_rgb = _contains_any(df_filtered[detail_col], rgb_keywords)
+                rgb_mask = has_rgb if rgb_pref else (~has_rgb)
+
+            if rgb_mask is not None:
+                df_try = df_filtered[rgb_mask].copy()
+                if not df_try.empty:
+                    df_filtered = df_try
+
+                # bonus: encourage matching when rgb_pref=True; when False, encourage non-rgb
+                df_filtered["__pref_bonus"] = pd.to_numeric(df_filtered["__pref_bonus"], errors="coerce").fillna(0.0)
+                if "RGB_分數" in df_filtered.columns:
+                    colv = pd.to_numeric(df_filtered["RGB_分數"], errors="coerce").fillna(0.0)
+                    match = (colv > 0) if rgb_pref else (colv <= 0)
+                    df_filtered["__pref_bonus"] += match.astype(float) * 20.0
+                elif detail_col is not None:
+                    rgb_keywords = [
+                        "RGB", "ARGB", "A-RGB", "Addressable", "AURA", "Mystic", "iCUE",
+                        "Chroma", "Polychrome", "Fusion", "Light", "Lighting", "LED",
+                        "燈效", "燈光", "RGB燈", "發光", "炫彩"
+                    ]
+                    has_rgb = _contains_any(df_filtered[detail_col], rgb_keywords)
+                    match = has_rgb if rgb_pref else (~has_rgb)
+                    df_filtered["__pref_bonus"] += match.astype(float) * 20.0
+
         return df_filtered.reset_index(drop=True)
-
     def _purpose_weights(self, purpose: Optional[str], cooling_type: str) -> Dict[str, float]:
         if purpose == "programming":
             weights = {"CPU": 0.40, "VGA": 0.05, "MB": 0.12, "RAM": 0.15,
@@ -182,6 +291,16 @@ class NSGAPCBuilder:
             row = parts_pool[part].iloc[idx]
             cost = row.get("abs_price", 0)
             score = row.get("總分", 0)
+            try:
+                score = float(score)
+            except Exception:
+                score = 0.0
+            bonus = row.get("__pref_bonus", 0)
+            try:
+                bonus = float(bonus)
+            except Exception:
+                bonus = 0.0
+            score = score + bonus
             total_cost += cost
             total_score += weights.get(part, 0) * score
 
@@ -408,4 +527,3 @@ class NSGAPCBuilder:
             current_spent += row.get("abs_price", 0)
 
         return build, current_spent
-
