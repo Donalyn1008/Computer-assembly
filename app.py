@@ -146,7 +146,37 @@ purpose_key = st.selectbox(
     format_func=lambda k: "Select purpose..." if k == "" else PURPOSES[k],
 )
 purpose_val = None if purpose_key == "" else purpose_key
+# =========================
+# Advanced Options (⬅️ 新增)
+# =========================
+st.subheader("Advanced Options")
 
+# 顏色：黑/白/不限
+color_choice = st.selectbox(
+    "Color (Case / Theme)",
+    ["Any", "Black", "White"],
+    index=0,
+)
+
+# RGB：不限 / 要RGB / 不要RGB
+rgb_choice = st.selectbox(
+    "RGB LIGHT",
+    ["Any", "Yes (Need RGB)", "No (No RGB)"],
+    index=0,
+)
+
+# 轉成比較乾淨的值給 optimizer
+color_val: Optional[str] = None
+if color_choice == "Black":
+    color_val = "black"
+elif color_choice == "White":
+    color_val = "white"
+
+rgb_val: Optional[bool] = None
+if rgb_choice.startswith("Yes"):
+    rgb_val = True
+elif rgb_choice.startswith("No"):
+    rgb_val = False
 # =========================
 # Specify Components
 # =========================
@@ -221,6 +251,8 @@ if st.button("Generate Result", type="primary"):
         "specified_brands": spec_brand_map, 
         "cooling": "heat",
         "purpose": purpose_val,
+        "color": color_val,   
+        "rgb": rgb_val, 
     }
 
     ai = get_ai()
